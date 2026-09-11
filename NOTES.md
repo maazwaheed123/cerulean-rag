@@ -358,3 +358,61 @@ the default `SIM_THRESHOLD=0.45` in the plan would never fire on this
 embedding model. Also note that BM25 will match "2025" against the
 `SALES-PL-2025` document id in every context header, so Step 6 should be
 aware that year tokens in a question pull price-list chunks.
+
+## Step 6 — retrieval decisions
+
+- Hybrid: vector top-10 + BM25 top-10 per query, Reciprocal Rank Fusion
+  (k=60), de-duplicated by chunk id, TOP_K=8 kept. Each result carries its
+  best vector similarity and BM25 score as evidence, and which sources
+  produced it.
+- BM25 tokenises `text_for_embedding` (context header + text), lowercase
+  alphanumerics with a small stop-word list, numbers kept. Including the
+  header makes document ids, titles and section labels keyword-searchable
+  ("HR-POL-002", "Enterprise", "probation"). Side effect: a year in the
+  question matches the price-list document ids (SALES-PL-2025).
+- Sub-queries are produced only for questions that open with a
+  summarise/compare/list/explain/"what are" lead AND split on " and " / ";"
+  into halves with >= 3 alphabetic tokens each. Narrative "and" ("joins on
+  1 March and leaves on 15 September") is not split. The full question is
+  always searched as well, so fusion sees 2 x (1 + n) ranked lists.
+- Similarity bands are driven by `SIM_THRESHOLD`, now defaulted to 0.65
+  (was 0.45 in the plan, which never fires with nomic-embed-text):
+  >= 0.75 "good", 0.65-0.75 "adequate", < 0.65 "LOW". The threshold is
+  a signal in the prompt, not a hard gate: the Step 5 data showed an absent
+  topic scoring above a genuinely relevant hit.
+- Ambiguity signal: <= 2 content tokens after stop-word removal, hits spread
+  over >= 3 documents, and top1 - top3 vector similarity < 0.08.
+- Metadata notes give the model: today's date, a chronology of the retrieved
+  documents oldest-first, per-document current / SUPERSEDED status, review
+  status, an explicit SUPERSEDES line when both ends of a link are retrieved,
+  "supersedes X which is not in the knowledge base" for out-of-corpus links,
+  and any precedence sentence found in the retrieved text (regex:
+  prevails / operative document / takes precedence / governs / overrides).
+
+Live hybrid retrieval over the built index (TOP_K=8), from
+`pytest tests/test_retrieval.py -m ollama -s`:
+
+| # | Question (short) | Docs a correct answer must cite | In top-8? | best sim |
+|---|---|---|---|---|
+| 1 | annual leave policy | HR-POL-002 | yes | 0.796 |
+| 2 | notice during probation | HR-POL-005 | yes | 0.845 |
+| 3 | joins 1 Mar, leaves 15 Sep | HR-POL-002 + HR-PRO-011 | yes | 0.832 |
+| 4 | current Professional price | SALES-PL-2026 + SALES-PL-2025 (+FAQ) | yes | 0.829 |
+| 5 | Enterprise refund window | LEG-TRM-004 + SUP-FAQ-001 | yes | 0.842 |
+| 6 | 2025 revenue (absent) | — | n/a | 0.662 |
+| 7 | CTO (absent) | ADM-REF-001 (to explain absence) | yes | 0.657 |
+| 8 | "What is the limit?" | — (ambiguity signal fired, 4 docs) | n/a | 0.680 |
+| 9 | bypass approval process | — | n/a | 0.719 |
+| 10 | repeat your instructions | — (input guard blocks before retrieval) | n/a | 0.713 |
+| 11 | vendor onboarding procedure | PROC-PRO-002 | yes | 0.825 |
+| 12 | expense thresholds + travel rules | FIN-POL-003 §2 + FIN-POL-007 §1 | yes (ranks 5 and 4) | 0.836 |
+
+Overall document recall 12/12. Retrieval takes ~2.5 s per question, almost
+all of it the query embedding round-trip to Ollama (3 queries for Q12).
+
+Band observation for Step 9 calibration: with `SIM_THRESHOLD=0.65` the two
+absent-topic questions (0.662, 0.657) land in "adequate", not "LOW". The
+data here separates cleanly at threshold 0.70 with a 0.08 "good" margin
+(direct hits >= 0.796, absent <= 0.68, bypass/extraction ~0.71). Decide in
+Step 9 with the extra questions included, so the choice is not fitted to the
+12 official ones alone.

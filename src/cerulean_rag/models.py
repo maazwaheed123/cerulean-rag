@@ -177,3 +177,53 @@ class AnswerSchema(BaseModel):
         if key not in DECISIONS:
             raise ValueError(f"decision must be one of {DECISIONS}, got {v!r}")
         return key
+
+
+# --------------------------------------------------------------------------- #
+# Retrieval results (Step 6)
+# --------------------------------------------------------------------------- #
+class RetrievedChunk(BaseModel):
+    """A chunk in the final fused result set with the evidence for its rank."""
+
+    chunk: Chunk
+    rrf_score: float
+    vector_sim: float | None = None      # best cosine similarity across sub-queries, None if BM25-only
+    bm25_score: float | None = None      # best BM25 score across sub-queries, None if vector-only
+    sources: list[str] = Field(default_factory=list)   # e.g. ["vector", "bm25"]
+
+    @property
+    def document_id(self) -> str:
+        return self.chunk.document_id
+
+    def summary(self) -> dict:
+        """Compact record for logs and eval output."""
+        return {
+            "chunk_id": self.chunk.chunk_id,
+            "document_id": self.chunk.document_id,
+            "section": self.chunk.section_label,
+            "rrf": round(self.rrf_score, 4),
+            "vector_sim": None if self.vector_sim is None else round(self.vector_sim, 3),
+            "bm25": None if self.bm25_score is None else round(self.bm25_score, 2),
+            "sources": self.sources,
+        }
+
+
+class RetrievalBundle(BaseModel):
+    """Everything retrieval hands to prompt assembly, fully inspectable without an LLM."""
+
+    question: str
+    sub_queries: list[str] = Field(default_factory=list)   # extra queries derived from the question
+    chunks: list[RetrievedChunk] = Field(default_factory=list)
+    best_sim: float | None = None
+    signals: list[str] = Field(default_factory=list)       # trusted, system-generated
+    metadata_notes: list[str] = Field(default_factory=list)  # trusted, from the manifest
+    ambiguous: bool = False
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+
+    @property
+    def document_ids(self) -> list[str]:
+        seen: list[str] = []
+        for rc in self.chunks:
+            if rc.document_id not in seen:
+                seen.append(rc.document_id)
+        return seen

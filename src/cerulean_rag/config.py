@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Retrieval
     TOP_K: int = Field(default=8, ge=1)
     RETRIEVE_K_PER_SOURCE: int = Field(default=10, ge=1)
-    SIM_THRESHOLD: float = Field(default=0.45, ge=0.0, le=1.0)
+    SIM_THRESHOLD: float = Field(default=0.65, ge=0.0, le=1.0)
     USE_BM25: bool = True
 
     # Generation
