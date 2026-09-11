@@ -315,3 +315,46 @@ Observed with PyMuPDF 1.28 `page.get_text("text")` on all 13 files:
 - Payload echo check uses a +-250 character window around the match to
   decide whether the answer *describes* the injection (words such as
   "instruction", "disregarded", "embedded") or *repeats* it as fact.
+
+## Step 5 — ingestion + first retrieval numbers
+
+Ingest (`python scripts/ingest.py`), measured on the target machine:
+
+```text
+13 documents, 88 chunks, 3 flagged for embedded instructions, embed 19.1 s, total 24.9 s
+```
+
+- Embedding 88 chunks with nomic-embed-text through Ollama took 19.1 s
+  (three batches of 32), i.e. ~4.6 chunks/s on CPU including HTTP overhead.
+  Load + chunk + scan + write chunks.jsonl is ~6 s (PyMuPDF table detection
+  is most of it).
+- The build is always a full rebuild (collection dropped and recreated).
+  `--no-embed` writes `data/chunks.jsonl` only, so the BM25 side and the
+  tests can run without Ollama.
+- `data/chunks.jsonl` stores the full `Chunk` model per line
+  (`Chunk.model_validate` reloads it), so BM25 in Step 6 and the eval have
+  the same text and metadata as the vectors.
+- Chroma collection is created with `hnsw:space = cosine`; the debug script
+  reports similarity as `1 - distance`.
+
+Vector-only retrieval (`scripts/retrieval_check.py`), cosine similarity of the
+`search_query:`-prefixed question vs `search_document:`-prefixed chunks:
+
+| Query | Expected chunk | Rank | Best sim | Notes |
+|---|---|---|---|---|
+| What is the company's annual leave policy? | HR-POL-002 §4.2 | 1 | 0.796 | all top-8 are leave chunks |
+| notice when resigning during probation | HR-POL-005 §3 | 1 | 0.813 | |
+| current price of Atlas Professional | SALES-PL-2026 §1 / SALES-PL-2025 §1 | 5 / 6 | 0.816 | #1 is the FAQ pricing Q+A (stale SAR 4,500); the "Additional users" tables outrank the plan table on the dense side |
+| Chief Technology Officer | ADM-REF-001 §2 | 1 | 0.607 | retrieved as wanted, but low score |
+| company revenue 2025 | (nothing relevant exists) | — | 0.632 | top hits are SALES-PL-2025 chunks pulled by the token "2025" |
+
+**Calibration finding.** Good direct hits score 0.75–0.82. The absent-topic
+query scores 0.632, ABOVE the genuinely relevant directory hit for the CTO
+question (0.607). So a similarity threshold cannot decide "the answer is not
+in the corpus"; it can only mark a low-confidence band. The plan's design
+(threshold is a signal to the model, not the decision) is confirmed by data.
+For Step 6/9: treat best-sim below ~0.68 as "LOW" in the retrieval signals;
+the default `SIM_THRESHOLD=0.45` in the plan would never fire on this
+embedding model. Also note that BM25 will match "2025" against the
+`SALES-PL-2025` document id in every context header, so Step 6 should be
+aware that year tokens in a question pull price-list chunks.

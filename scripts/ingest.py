@@ -1,4 +1,12 @@
-"""Build the knowledge base from ./corpus. Thin wrapper around cerulean_rag.ingest (Step 5)."""
+"""Build the knowledge base from ./corpus into ./data (Chroma + chunks.jsonl).
+
+Usage:  python scripts/ingest.py [--no-embed] [--json]
+"""
+
+import sys
+
+from cerulean_rag.ingest import main
 
 if __name__ == "__main__":
-    raise SystemExit("Not implemented yet: this script is written in Step 5.")
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.exit(main())
