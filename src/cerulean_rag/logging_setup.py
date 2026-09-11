@@ -33,9 +33,11 @@ def setup_logging(
     level_name = level.upper()
     root.setLevel(level_name)
 
-    console = RichHandler(rich_tracebacks=True, show_path=False, markup=False)
+    console = RichHandler(rich_tracebacks=False, show_path=False, markup=False)
     console.setLevel(level_name)
     console.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+    # Tracebacks belong in the file; the console gets one-line messages only.
+    console.addFilter(lambda record: record.exc_info is None)
     root.addHandler(console)
 
     if log_file is not None:
