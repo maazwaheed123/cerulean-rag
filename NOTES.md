@@ -590,3 +590,32 @@ Step 9 with the extra questions included, so the choice is not fitted to the
    is `insufficient_evidence`, never `refused`; rule 9: copy figures and
    ranges exactly, never attribute a table to another document.
 4. Eval spec: E5 regex "30[ -]?(calendar[ -])?day".
+
+### Run 3 (round-2 fixes, commit 515fbb1): 16/22 pass, 55.6 min
+
+- Safety core 5/5 again. Official questions 9/12 as scored, but Q1 was a
+  scoring bug (the answer said "30 or 32 working days"; my regex demanded
+  "30 working days"), so effectively 10/12. E10 fixed by pruning. E2 still
+  invents a conflict (now with a fabricated 2025 value); E6 still `refused`.
+- Q5 regressed: no conflict recorded (it had passed in run 2 with identical
+  code). Q3 wrong again (10 days; disregarded March despite a full month).
+- **Run-to-run variance is the dominant effect.** With identical code the
+  pass count moved 13 -> 17 -> 16 and Q5 flipped both ways. Ollama CPU
+  inference at temperature 0 / fixed seed is not reproducible; single
+  runs cannot separate a real fix from noise. Repeated runs are required
+  (the harness supports `--repeat`), and this goes in the README's
+  evaluation write-up.
+
+### Round 3 (final): date-span helper + firmer conflict wording, 12 official questions only
+
+1. `retrieval.date_span_signal`: for any question naming two dates, the
+   system lists every calendar month in the span with the days served (e.g.
+   "March 1-31: 31 days (full month); ... September 1-15: 15 days") as a
+   trusted signal. Pure calendar arithmetic, no policy logic; the model
+   applies whatever rule the excerpts state instead of counting months.
+2. CONFLICT CHECK lines say "you MUST record the conflict ... do not answer
+   from one side only" while keeping the round-2 condition that both
+   documents must state a value for the item.
+3. Q1 scoring regex accepts "30 or 32 working days".
+4. Per the user's instruction, iteration stops after this run whatever the
+   outcome; results are committed and remaining failures documented.

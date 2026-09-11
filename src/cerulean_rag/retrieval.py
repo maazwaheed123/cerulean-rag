@@ -204,10 +204,12 @@ def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
             out.append(
                 f"CONFLICT CHECK: the excerpts include {old.document_id} (superseded) and "
                 f"{new.document_id} (current; it supersedes {old.document_id}). If BOTH documents state a value "
-                f"for the item asked about and the values differ, set decision to \"conflict_resolved\", report "
-                f"both values with their sources, cite both documents, and give the {new.document_id} value as "
-                f"the current one. If only one document, or a different document altogether, addresses the item, "
-                f"there is no conflict: answer normally and cite the document that actually contains the value."
+                f"for the item asked about and the values differ, you MUST set decision to \"conflict_resolved\" "
+                f"and record the conflict: report both values with their sources in the answer text and in the "
+                f"conflicts field, cite both documents, and give the {new.document_id} value as the current one. "
+                f"Do not answer from one side only. If only one document, or a different document altogether, "
+                f"addresses the item, there is no conflict: answer normally and cite the document that actually "
+                f"contains the value."
             )
 
     overdue = [m for m in metas.values() if m.review_status]
@@ -216,8 +218,9 @@ def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
         out.append(
             f"CONFLICT CHECK: {', '.join(m.document_id for m in overdue)} is overdue for review and appears "
             f"alongside current documents ({', '.join(m.document_id for m in current_others)}). If it states a "
-            f"value for the item asked about that differs from a current document, set decision to "
-            f"\"conflict_resolved\", cite both, and prefer the current document. If it does not address the "
+            f"value for the item asked about that differs from a current document, you MUST set decision to "
+            f"\"conflict_resolved\", record both values in the answer text and the conflicts field, cite both, "
+            f"and prefer the current document. Do not answer from one side only. If it does not address the "
             f"item, ignore it."
         )
 
@@ -230,9 +233,94 @@ def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
     if clause_docs and len(metas) > 1:
         out.append(
             f"CONFLICT CHECK: {'; '.join(clause_docs)} contain(s) a precedence clause. Where another excerpt "
-            f"describes the same subject differently, report the conflict and apply the clause."
+            f"describes the same subject differently, you MUST record the conflict (decision "
+            f"\"conflict_resolved\", both values in the answer text, both documents cited) and apply the clause."
         )
     return out
+
+
+_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august",
+           "september", "october", "november", "december"]
+_MONTH_RE = "|".join(m[:3] + r"[a-z]*" for m in _MONTHS)
+_DATE_PATTERNS = [
+    re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(" + _MONTH_RE + r")\b(?:,?\s+(\d{4}))?", re.I),   # 1 March [2026]
+    re.compile(r"\b(" + _MONTH_RE + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4}))?", re.I),    # March 1[, 2026]
+    re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"),                                                    # 2026-03-01
+]
+
+
+def _month_index(name: str) -> int | None:
+    key = name.lower()[:3]
+    for i, m in enumerate(_MONTHS):
+        if m.startswith(key):
+            return i + 1
+    return None
+
+
+def extract_dates(question: str, default_year: int) -> list:
+    """Dates mentioned in the question, in order of appearance (year defaults to ``default_year``)."""
+    import calendar
+    from datetime import date as _date
+
+    found: list[tuple[int, _date]] = []
+    for rx in _DATE_PATTERNS:
+        for m in rx.finditer(question):
+            g = m.groups()
+            try:
+                if rx is _DATE_PATTERNS[0]:
+                    day, month, year = int(g[0]), _month_index(g[1]), int(g[2]) if g[2] else default_year
+                elif rx is _DATE_PATTERNS[1]:
+                    month, day, year = _month_index(g[0]), int(g[1]), int(g[2]) if g[2] else default_year
+                else:
+                    year, month, day = int(g[0]), int(g[1]), int(g[2])
+                if month is None or not 1 <= day <= calendar.monthrange(year, month)[1]:
+                    continue
+                found.append((m.start(), _date(year, month, day)))
+            except (ValueError, TypeError):
+                continue
+    found.sort()
+    dates = []
+    for _, d in found:
+        if d not in dates:
+            dates.append(d)
+    return dates
+
+
+def date_span_signal(question: str, as_of) -> str | None:
+    """Trusted calendar arithmetic for a question that names a start and an end date.
+
+    Lists every calendar month in the span with the number of days served in it,
+    so the model applies whatever rule the excerpts state to correct figures
+    instead of counting months itself. Contains no policy logic.
+    """
+    import calendar
+    from datetime import date as _date
+
+    dates = extract_dates(question, as_of.year)
+    if len(dates) < 2:
+        return None
+    start, end = dates[0], dates[1]
+    if end < start:  # e.g. "20 November to 10 February" without years
+        end = _date(end.year + 1, end.month, end.day)
+    if (end - start).days > 366 * 3:
+        return None
+    parts = []
+    cursor = _date(start.year, start.month, 1)
+    while cursor <= end:
+        last_day = calendar.monthrange(cursor.year, cursor.month)[1]
+        month_start = max(start, cursor)
+        month_end = min(end, _date(cursor.year, cursor.month, last_day))
+        served = (month_end - month_start).days + 1
+        full = " (full month)" if served == last_day else ""
+        parts.append(f"{cursor.strftime('%B')} {month_start.day}-{month_end.day}: {served} days{full}")
+        cursor = _date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
+    total = (end - start).days + 1
+    return (
+        f"DATE SPAN HELPER (trusted arithmetic): from {start.day} {start.strftime('%B')} to "
+        f"{end.day} {end.strftime('%B')} inclusive is {total} calendar days across {len(parts)} calendar months: "
+        + "; ".join(parts)
+        + ". Apply the rules stated in the excerpts to these figures month by month; do not recount the months."
+    )
 
 
 def security_signal(chunks: list[RetrievedChunk]) -> str | None:
@@ -414,6 +502,9 @@ class Retriever:
         best_sim = max(sims) if sims else None
 
         signals, ambiguous = build_signals(question, chunks, best_sim, s.SIM_THRESHOLD)
+        span = date_span_signal(question, s.AS_OF_DATE)
+        if span:
+            signals.append(span)
         notes = build_metadata_notes(chunks, s.AS_OF_DATE, self.all_meta)
         timings["retrieval_total_ms"] = (time.perf_counter() - t0) * 1000
 

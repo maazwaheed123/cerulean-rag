@@ -17,7 +17,7 @@
   question: "What is the company's annual leave policy?"
   expected_decision: [answer]
   expected_docs: [HR-POL-002]
-  must_contain: ["24 working days", "30 working days", "32 working days"]
+  must_contain: ["24 working days", "\\b30\\b( or 32)? working days", "32 working days"]
   must_not_contain: []
   notes: "Direct grounded answer with a citation."
 

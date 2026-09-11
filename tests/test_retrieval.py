@@ -237,3 +237,29 @@ def test_conflict_and_security_signals_from_metadata() -> None:
     # a plain single-document result set produces neither
     plain, _ = build_signals("What is the annual leave entitlement?", [rc(new, "text")], 0.8, 0.65)
     assert not any("CONFLICT CHECK" in s or "SECURITY NOTICE" in s for s in plain)
+
+
+# ---- round-3 additions: date span helper ------------------------------------
+def test_date_span_helper_lists_months() -> None:
+    from cerulean_rag.retrieval import date_span_signal, extract_dates
+
+    q = "An employee joins on 1 March and leaves on 15 September. How much annual leave are they entitled to?"
+    ds = extract_dates(q, 2026)
+    assert [(d.month, d.day) for d in ds] == [(3, 1), (9, 15)]
+    sig = date_span_signal(q, date(2026, 8, 27))
+    assert sig.startswith("DATE SPAN HELPER")
+    assert "March 1-31: 31 days (full month)" in sig
+    assert "August 1-31: 31 days (full month)" in sig
+    assert "September 1-15: 15 days" in sig
+    assert "199 calendar days across 7 calendar months" in sig
+
+
+def test_date_span_helper_variants_and_absence() -> None:
+    from cerulean_rag.retrieval import date_span_signal
+
+    assert date_span_signal("What is the annual leave policy?", date(2026, 8, 27)) is None
+    assert date_span_signal("What changed on 1 March 2026?", date(2026, 8, 27)) is None      # one date only
+    sig = date_span_signal("Someone who started on 20 June and left on 30 November", date(2026, 8, 27))
+    assert "June 20-30: 11 days" in sig and "November 1-30: 30 days (full month)" in sig
+    wrap = date_span_signal("From 2025-11-20 to 2026-02-10", date(2026, 8, 27))
+    assert "November 20-30: 11 days" in wrap and "February 1-10: 10 days" in wrap
