@@ -160,7 +160,7 @@ class AnswerSchema(BaseModel):
     ("Insufficient-Evidence") are normalised instead of failing the parse.
     """
 
-    decision: str
+    decision: str = Field(json_schema_extra={"enum": list(DECISIONS)})
     answer: str = ""
     citations: list[Citation] = Field(default_factory=list)
     conflicts: list[Conflict] = Field(default_factory=list)
@@ -227,3 +227,30 @@ class RetrievalBundle(BaseModel):
             if rc.document_id not in seen:
                 seen.append(rc.document_id)
         return seen
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline result (Step 7)
+# --------------------------------------------------------------------------- #
+class AnswerResult(BaseModel):
+    """What ``pipeline.ask`` returns: the verified answer plus everything needed to audit it."""
+
+    question: str
+    sub_queries: list[str] = Field(default_factory=list)
+    parsed: AnswerSchema
+    confidence: str = "low"                     # "high" | "medium" | "low"
+    warnings: list[str] = Field(default_factory=list)
+    retrieved: list[dict] = Field(default_factory=list)   # RetrievedChunk.summary() records
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    model: str = ""
+    blocked: bool = False
+    generation_method: str = ""
+    signals: list[str] = Field(default_factory=list)
+    prompt_chars: int = 0
+
+    @field_validator("confidence")
+    @classmethod
+    def _check_confidence(cls, v: str) -> str:
+        if v not in {"high", "medium", "low"}:
+            raise ValueError("confidence must be high, medium or low")
+        return v

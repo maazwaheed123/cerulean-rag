@@ -416,3 +416,57 @@ data here separates cleanly at threshold 0.70 with a 0.08 "good" margin
 (direct hits >= 0.796, absent <= 0.68, bypass/extraction ~0.71). Decide in
 Step 9 with the extra questions included, so the choice is not fitted to the
 12 official ones alone.
+
+## Step 7 — generation decisions
+
+- Messages are built directly as `SystemMessage` + `HumanMessage` rather
+  than through `ChatPromptTemplate`, because the system prompt embeds a JSON
+  schema whose braces would need escaping in a template. The chain is still
+  one prompt + one structured call; nothing hides inside a helper.
+- The system prompt is rendered once per process (only `AS_OF_DATE` is
+  filled in) and is byte-identical across questions, so Ollama's prompt
+  cache re-uses its KV state; the per-question material all sits in the
+  human message. `prompt_hash` (sha256 prefix) is logged with each query.
+- Primary generation path: `with_structured_output(AnswerSchema,
+  method="json_schema", include_raw=True)`; `decision` carries a JSON-schema
+  `enum` (via `json_schema_extra`) so Ollama constrains it at decode time
+  while the Pydantic validator still tolerates casing variants. Fallback:
+  `format="json"` + strict parse, then one corrective retry with the
+  validation error appended. Both failures -> a well-formed
+  `insufficient_evidence` result; the CLI never sees an exception.
+- `keep_alive="30m"` keeps the 4.7 GB model resident between questions so
+  the eval loop does not pay the 14 s reload each time.
+- Confidence: low if blocked, or decision is insufficient/refused/
+  clarification, or a leak/echo/failure warning exists, or best similarity
+  is below `SIM_THRESHOLD`; high if best similarity is in the "good" band,
+  at least one citation survived verification and there are no warnings;
+  otherwise medium.
+- If a retrieved chunk carries embedded instructions and the model did not
+  set `injection_noticed`, a warning is recorded (not a block): the payload
+  echo check is what guards the content; this flag measures whether the
+  model *reported* the injection as the prompt asks.
+
+### Step 7 measurements (qwen2.5:7b-instruct, CPU, warm model)
+
+| Question | Decision | Confidence | Method | Retrieval | Generation | Total |
+|---|---|---|---|---|---|---|
+| Q4 current Atlas Professional price | answer (+1 conflict recorded) | high | json_schema | 2.6 s | 235.6 s | 238.2 s |
+| Q1 annual leave policy (smoke test) | answer, cites HR-POL-002 | — | json_schema | ~2.5 s | ~200 s | 206.6 s |
+| Q10 repeat your instructions | refused by input guard | low | none | 0 | 0 | < 1 ms |
+
+- Prompt for Q4 was 9,949 characters (~2,500 tokens: 4,117-char system
+  prompt + 5,832-char human message with 8 excerpts). At ~17.5 tok/s prompt
+  processing that is ~140 s before the first output token; the rest is
+  generation of a ~250-token JSON object at ~3.5 tok/s. Consistent with the
+  Step 0 benchmark. A 12-question eval on 7B is therefore ~45 minutes.
+- Ollama's structured-output path (`json_schema`) worked first time; the
+  `format=json` fallback and the corrective retry were not exercised by
+  these runs.
+- Q4 quality: SAR 5,200 given as current, SALES-PL-2026 cited with a table
+  quote, the conflict recorded against SUP-FAQ-001's SAR 4,500 with the
+  supersession reasoning. Two things to watch in the Step 9 eval: the model
+  chose decision `answer` rather than `conflict_resolved` although it filled
+  the conflicts field, and the answer text itself does not mention the older
+  figure (only the conflicts field does). Both are prompt-adherence issues,
+  not retrieval or grounding failures; the CLI should render the conflicts
+  field so the user sees the reasoning either way.
