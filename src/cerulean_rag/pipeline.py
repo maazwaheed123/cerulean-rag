@@ -73,6 +73,7 @@ def _log_record(result: AnswerResult, bundle: RetrievalBundle | None, s: Setting
         "timings_ms": result.timings_ms,
         "model": result.model,
         "prompt_hash": prompt_hash(system_prompt),
+        "token_stats": result.token_stats,
         "answer": result.parsed.answer,
     }
 
@@ -142,6 +143,7 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
         generation_method=gen.method,
         signals=bundle.signals,
         prompt_chars=prompt_chars,
+        token_stats=gen.token_stats,
     )
     log.info(
         "answered %r: decision=%s confidence=%s citations=%d warnings=%d gen=%.0fs total=%.0fs",

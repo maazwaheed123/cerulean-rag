@@ -247,6 +247,7 @@ class AnswerResult(BaseModel):
     generation_method: str = ""
     signals: list[str] = Field(default_factory=list)
     prompt_chars: int = 0
+    token_stats: dict = Field(default_factory=dict)   # Ollama eval/prompt counters when available
 
     @field_validator("confidence")
     @classmethod

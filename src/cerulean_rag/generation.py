@@ -43,6 +43,18 @@ class GenerationResult:
     elapsed_s: float = 0.0
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    token_stats: dict = field(default_factory=dict)   # eval_count, eval_duration_ns, prompt_eval_count, ...
+
+
+def token_stats_from(msg) -> dict:
+    """Ollama timing/token counters from a message's response metadata (durations in ns)."""
+    md = getattr(msg, "response_metadata", None) or {}
+    out: dict = {}
+    for k in ("eval_count", "eval_duration", "prompt_eval_count", "prompt_eval_duration",
+              "total_duration", "load_duration"):
+        if md.get(k) is not None:
+            out[k + ("_ns" if k.endswith("duration") else "")] = md[k]
+    return out
 
 
 def _llm_kwargs(s: Settings) -> dict:
@@ -107,11 +119,16 @@ def parse_answer(raw: str) -> AnswerSchema:
     return AnswerSchema.model_validate_json(_extract_json_object(raw))
 
 
+_LAST_STATS: dict = {}   # token counters of the most recent model call (read by generate())
+
+
 def _structured_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSchema | None, str, str | None]:
     """Primary path. Returns (parsed or None, raw text, error)."""
     llm = get_llm(s).with_structured_output(AnswerSchema, method="json_schema", include_raw=True)
     out = llm.invoke(messages)
     raw_msg = out.get("raw")
+    _LAST_STATS.clear()
+    _LAST_STATS.update(token_stats_from(raw_msg))
     raw = raw_msg.content if raw_msg is not None and isinstance(raw_msg.content, str) else str(raw_msg)
     parsed = out.get("parsed")
     err = out.get("parsing_error")
@@ -130,6 +147,8 @@ def _json_mode_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSch
     """Fallback path: format=json and a strict parse."""
     llm = get_llm(s, json_mode=True)
     msg = llm.invoke(messages)
+    _LAST_STATS.clear()
+    _LAST_STATS.update(token_stats_from(msg))
     raw = msg.content if isinstance(msg.content, str) else json.dumps(msg.content)
     try:
         return parse_answer(raw), raw, None
@@ -139,6 +158,12 @@ def _json_mode_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSch
 
 def generate(messages: list[BaseMessage], settings: Settings | None = None) -> GenerationResult:
     """Run the model once (plus at most one corrective retry) and return a parsed answer."""
+    result = _generate(messages, settings)
+    result.token_stats = dict(_LAST_STATS)
+    return result
+
+
+def _generate(messages: list[BaseMessage], settings: Settings | None = None) -> GenerationResult:
     s = settings or get_settings()
     t0 = time.perf_counter()
     attempts = 0
