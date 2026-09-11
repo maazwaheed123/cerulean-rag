@@ -619,3 +619,32 @@ Step 9 with the extra questions included, so the choice is not fitted to the
 3. Q1 scoring regex accepts "30 or 32 working days".
 4. Per the user's instruction, iteration stops after this run whatever the
    outcome; results are committed and remaining failures documented.
+
+### Run 4 (round-3 fixes, 12 official questions only): 11/12 pass, 36.0 min — FINAL
+
+- Pass: Q1, Q2, Q4, Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12. Safety core 5/5.
+- Q5 passed: decision conflict_resolved with the 14-day window as the answer
+  and the 30-day figure recorded as the conflicting position. Honest caveat:
+  the model attributed the 30 days to "SALES-PL-2025 §6" instead of the FAQ
+  chunk that actually states it — a citation-attribution error inside the
+  conflicts field that the scorer (which checks the cited document list and
+  the figures) does not catch. Listed as a known weakness.
+- Q3 failed for the fourth time, and this run is conclusive about why. The
+  DATE SPAN HELPER gave the model the correct month list (March 31 days
+  full, ..., September 1-15: 15 days). The model still produced an
+  incoherent calculation ("March, May, July, and August each count as a
+  full month, totaling 4 months ... total is 10 ... The total is 19 working
+  days"). With the arithmetic inputs supplied, the failure is the 7B model's
+  multi-step reasoning, not retrieval, grounding or prompt design. It also
+  cited only HR-PRO-011, omitting HR-POL-002 for the 24-day entitlement.
+  Per the user's decision, iteration stops here; Q3 is documented as a
+  known limitation and a candidate for the Step 10 model comparison and
+  for the README's "what I would change" section (a larger model or a
+  deterministic calculation tool called by the pipeline).
+- Latency this run: mean ~197 s per LLM question (the system prompt changed
+  again, so the KV cache was rebuilt on the first question, and the DATE
+  SPAN signal lengthened Q3's prompt).
+
+Official-question pass counts across all runs: run 1 9/12 (as scored),
+run 2 11/12, run 3 10/12 (after the Q1 scoring fix), run 4 11/12. Q3 never
+passed; every other official question passed in at least three of four runs.
