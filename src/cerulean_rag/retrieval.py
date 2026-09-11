@@ -203,10 +203,11 @@ def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
             new = metas[old.superseded_by]
             out.append(
                 f"CONFLICT CHECK: the excerpts include {old.document_id} (superseded) and "
-                f"{new.document_id} (current; it supersedes {old.document_id}). Compare every value they "
-                f"state for the item asked about. If the values differ, set decision to \"conflict_resolved\", "
-                f"report both values with their sources, cite both documents, and give the "
-                f"{new.document_id} value as the current one."
+                f"{new.document_id} (current; it supersedes {old.document_id}). If BOTH documents state a value "
+                f"for the item asked about and the values differ, set decision to \"conflict_resolved\", report "
+                f"both values with their sources, cite both documents, and give the {new.document_id} value as "
+                f"the current one. If only one document, or a different document altogether, addresses the item, "
+                f"there is no conflict: answer normally and cite the document that actually contains the value."
             )
 
     overdue = [m for m in metas.values() if m.review_status]
@@ -215,8 +216,9 @@ def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
         out.append(
             f"CONFLICT CHECK: {', '.join(m.document_id for m in overdue)} is overdue for review and appears "
             f"alongside current documents ({', '.join(m.document_id for m in current_others)}). If it states a "
-            f"value that differs from a current document, set decision to \"conflict_resolved\", cite both, "
-            f"and prefer the current document."
+            f"value for the item asked about that differs from a current document, set decision to "
+            f"\"conflict_resolved\", cite both, and prefer the current document. If it does not address the "
+            f"item, ignore it."
         )
 
     clause_docs: list[str] = []

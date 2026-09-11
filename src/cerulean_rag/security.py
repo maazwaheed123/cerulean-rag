@@ -304,6 +304,33 @@ def find_payload_echo(text: str, payloads: list[str]) -> tuple[str, int] | None:
     return None
 
 
+_POSITION_PREFIX_RE = re.compile(r"^\s*[A-Z]+-[A-Z]+-\d+[^:]{0,80}:\s*")
+_INJECTION_COMMENTARY_RE = re.compile(
+    r"\b(instruction|directive|embedded|ai assistants?|do not follow|contains_embedded|disregard)\b", re.I
+)
+
+
+def prune_non_conflicts(conflicts: list) -> tuple[list, list[str]]:
+    """Keep only conflicts whose positions are two or more document values that differ.
+
+    Drops (with a warning) entries where a position is commentary about injected
+    text rather than a document value, and entries where all positions state the
+    same value once the "DOC-ID §section:" prefix is removed.
+    """
+    kept: list = []
+    warnings: list[str] = []
+    for cf in conflicts:
+        if any(_INJECTION_COMMENTARY_RE.search(pos) for pos in cf.positions):
+            warnings.append(f"dropped conflict entry '{cf.topic[:40]}': a position was commentary about injected text")
+            continue
+        values = {normalise(_POSITION_PREFIX_RE.sub("", pos)) for pos in cf.positions if pos.strip()}
+        if len(cf.positions) >= 2 and len(values) <= 1:
+            warnings.append(f"dropped conflict entry '{cf.topic[:40]}': all positions state the same value")
+            continue
+        kept.append(cf)
+    return kept, warnings
+
+
 def verify_answer(
     parsed: AnswerSchema,
     retrieved: list[Chunk],
@@ -355,9 +382,6 @@ def verify_answer(
                 continue
             kept_conflicts.append(cf)
         fixed.conflicts = kept_conflicts
-        if fixed.decision == "conflict_resolved" and not fixed.conflicts:
-            fixed.decision = "answer"
-            warnings.append("no conflicts remained after removing injected evidence; decision set to answer")
         for field_name in ("assumptions", "clarification_options"):
             items = getattr(fixed, field_name)
             clean = [x for x in items if not find_payload_echo(x, payloads)]
@@ -365,6 +389,14 @@ def verify_answer(
                 warnings.append(f"dropped {len(items) - len(clean)} {field_name} item(s) that used injected text")
                 fixed.injection_noticed = True
             setattr(fixed, field_name, clean)
+
+    # (b3) a conflict needs two document values that disagree: drop entries whose
+    # positions are commentary about injected text, or whose positions all agree
+    fixed.conflicts, dropped = prune_non_conflicts(fixed.conflicts)
+    warnings.extend(dropped)
+    if fixed.decision == "conflict_resolved" and not fixed.conflicts:
+        fixed.decision = "answer"
+        warnings.append("no genuine conflict remained; decision set to answer")
 
     # (c) numeric grounding: figures in the answer should exist in the context
     if not blocked and fixed.decision != "refused":

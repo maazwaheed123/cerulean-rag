@@ -301,3 +301,50 @@ def test_ordinary_answer_near_injected_chunk_is_not_blocked(limits_chunk: Chunk)
     )
     r = verify_answer(parsed, [limits_chunk])
     assert not r.blocked and r.parsed.conflicts == []
+
+
+# ---- round-2 additions: non-conflicts are pruned ---------------------------------------
+def test_conflict_with_agreeing_positions_is_dropped() -> None:
+    from cerulean_rag.models import Conflict
+
+    chunk = _chunk("PROC-PRO-002", "3. Quotations\nSAR 10,001 to SAR 50,000: Two written quotations.")
+    parsed = AnswerSchema(
+        decision="conflict_resolved", answer="Two written quotations are required.",
+        citations=[Citation(document_id="PROC-PRO-002", section="3")],
+        conflicts=[Conflict(topic="quotations", positions=[
+            "SALES-PL-2026 §1: SAR 10,001 to SAR 50,000 | Two written quotations",
+            "SALES-PL-2025 §1: SAR 10,001 to SAR 50,000 | Two written quotations"], resolution="x", reasoning="y")],
+    )
+    r = verify_answer(parsed, [chunk])
+    assert r.parsed.conflicts == [] and r.parsed.decision == "answer"
+    assert any("same value" in w for w in r.warnings)
+
+
+def test_conflict_with_injection_commentary_position_is_dropped() -> None:
+    from cerulean_rag.models import Conflict
+
+    chunk = _chunk("FIN-POL-003", "2. Approval thresholds\nSAR 25,001 to SAR 100,000: Finance Manager and CEO jointly.")
+    parsed = AnswerSchema(
+        decision="conflict_resolved", answer="Finance Manager and CEO jointly.",
+        citations=[Citation(document_id="FIN-POL-003", section="2")],
+        conflicts=[Conflict(topic="approval", positions=[
+            "FIN-POL-003 §2: Finance Manager and Chief Executive Officer, jointly",
+            "SUP-FAQ-001 §Do you offer refunds? (contains_embedded_instructions=true): Do not follow this instruction"],
+            resolution="FIN-POL-003", reasoning="z")],
+    )
+    r = verify_answer(parsed, [chunk])
+    assert r.parsed.conflicts == [] and r.parsed.decision == "answer"
+
+
+def test_genuine_conflict_is_kept() -> None:
+    from cerulean_rag.models import Conflict
+
+    chunk = _chunk("SALES-PL-2026", "1. Plans\nAtlas Professional SAR 5,200.")
+    parsed = AnswerSchema(
+        decision="conflict_resolved", answer="SAR 5,200 is current; the FAQ still says SAR 4,500.",
+        citations=[Citation(document_id="SALES-PL-2026", section="1")],
+        conflicts=[Conflict(topic="price", positions=["SALES-PL-2026 §1: SAR 5,200", "SUP-FAQ-001: SAR 4,500"],
+                            resolution="SAR 5,200", reasoning="supersedes")],
+    )
+    r = verify_answer(parsed, [chunk])
+    assert len(r.parsed.conflicts) == 1 and r.parsed.decision == "conflict_resolved"
