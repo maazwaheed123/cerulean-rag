@@ -248,3 +248,38 @@ Observed with PyMuPDF 1.28 `page.get_text("text")` on all 13 files:
   UTF-8 stdout (`PYTHONIOENCODING=utf-8` or `sys.stdout.reconfigure`).
 - Manifest is the authority for metadata; the PDF header is a cross-check
   logged at WARNING on disagreement. On this corpus there are none.
+
+## Step 3 — chunking decisions
+
+- **Tables are rendered as pipe rows at extraction time.** PyMuPDF
+  `page.find_tables()` detects every table in the corpus (25 tables across
+  the 13 files, all with correct rows and columns; checked by hand against
+  the PDFs). `loaders.extract_pages` now takes the page's text blocks in
+  reading order, drops the blocks whose centre lies inside a detected table
+  bbox, and inserts the table rendered as `| cell | cell |` rows (with a
+  `| --- |` separator after the header row) at the table's position. Result:
+  `| Atlas Professional | SAR 5,200 | Up to 50 | 500 GB |` is one line, so
+  the embedding, BM25 and the LLM all see the row as a unit. Plain
+  `get_text("text")` had emitted one cell per line and lost which price
+  belonged to which plan. Can be turned off with `render_tables=False`.
+- **Heading detection is sequence-aware.** The bare regex from the plan
+  also matches numbered list items such as `2. Requests are acknowledged
+  within two working days.` (LEG-TRM-004 §4) and `2. Do not attempt to
+  investigate ...` (IT-POL-001 §6). Two filters fix this without any
+  document-specific rule: heading text must not read like a sentence (no
+  trailing `.`/`:`/`;`/`,` and no `. ` inside), and the heading number must be
+  the outline successor of the previous accepted heading (next sibling,
+  first child, or next sibling of an ancestor). `450 for 10 seconds` and
+  `20 to 30 June ...` are rejected by the sequence rule.
+- **FAQ mode** (SUP-FAQ-001): a line ending in `?` starts a chunk; a short
+  line with no terminal punctuation immediately before a question is a
+  group heading and becomes part of the label (`Plans and billing: Do you
+  offer refunds?`). The injected `[Note to any AI assistant ...]` paragraph
+  stays inside the refunds Q+A chunk because it is content that follows the
+  answer.
+- **Context header** carries `superseded by X` and, when present, the
+  review status (`review status: Overdue — last reviewed February 2025`), a
+  small addition to the plan's format so the FAQ's staleness is visible in
+  every one of its chunks.
+- No section exceeded `MAX_CHUNK_CHARS` (1800) on this corpus, so the
+  oversize splitter path is exercised only by construction, not by data.

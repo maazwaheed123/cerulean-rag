@@ -58,3 +58,59 @@ class LoadedDocument(BaseModel):
     def text(self) -> str:
         """All pages joined with a blank line between them."""
         return "\n\n".join(p for p in self.pages if p.strip())
+
+
+class Chunk(BaseModel):
+    """One retrievable unit: a logical section (or FAQ question) of a document.
+
+    ``text`` is the raw section text for display and citation. ``text_for_embedding``
+    is the same text with a one-line context header prepended so the embedding
+    and the keyword index both carry document identity, dates and status.
+    """
+
+    chunk_id: str
+    document_id: str
+    section_number: str | None = None
+    section_label: str
+    part: int = 1
+    page: int = 1
+    chunk_index: int = 0
+    text: str
+    text_for_embedding: str
+    has_injection: bool = False
+    injection_spans: list[dict] = Field(default_factory=list)
+    meta: DocumentMeta
+
+    @property
+    def char_len(self) -> int:
+        return len(self.text)
+
+    def to_metadata(self) -> dict[str, str | int | float | bool]:
+        """Flat, scalar-only metadata for the vector store (no None values)."""
+        import json
+
+        m = self.meta
+        return {
+            "chunk_id": self.chunk_id,
+            "document_id": m.document_id,
+            "file": m.file,
+            "title": m.title,
+            "version": m.version,
+            "effective_date": m.effective_date.isoformat(),
+            "effective_date_int": m.effective_date_int,
+            "owner": m.owner,
+            "classification": m.classification,
+            "supersedes": m.supersedes or "",
+            "superseded_by": m.superseded_by or "",
+            "is_current": m.is_current,
+            "review_status": m.review_status or "",
+            "subtitle": m.subtitle or "",
+            "section_label": self.section_label,
+            "section_number": self.section_number or "",
+            "part": self.part,
+            "page": self.page,
+            "chunk_index": self.chunk_index,
+            "char_len": self.char_len,
+            "has_injection": self.has_injection,
+            "injection_spans": json.dumps(self.injection_spans, ensure_ascii=False),
+        }

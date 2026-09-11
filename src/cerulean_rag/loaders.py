@@ -89,13 +89,65 @@ def load_manifest(corpus_dir: str | Path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Page text
 # --------------------------------------------------------------------------- #
-def extract_pages(pdf_path: str | Path) -> list[str]:
-    """Raw text of every page, in reading order, using PyMuPDF."""
+def extract_pages(pdf_path: str | Path, render_tables: bool = True) -> list[str]:
+    """Text of every page in reading order, with tables rendered as pipe rows.
+
+    Plain ``get_text("text")`` emits each table cell on its own line, which
+    loses the row association ("Atlas Professional" / "SAR 5,200" / ...). With
+    ``render_tables`` the page's text blocks are taken in reading order, blocks
+    that fall inside a detected table are replaced by the table rendered as
+    ``| cell | cell |`` rows at the table's position, and everything else is
+    left exactly as PyMuPDF extracted it.
+    """
     path = Path(pdf_path)
     if not path.is_file():
         raise CorpusLoadError(f"PDF not found: {path}")
     with pymupdf.open(path) as doc:
-        return [page.get_text("text") for page in doc]
+        if not render_tables:
+            return [page.get_text("text") for page in doc]
+        return [_page_text_with_tables(page) for page in doc]
+
+
+def render_table_rows(rows: list[list[str | None]]) -> str:
+    """Render extracted table rows as Markdown-style pipe rows (header row first)."""
+    def clean(cell: str | None) -> str:
+        return re.sub(r"\s+", " ", (cell or "")).strip()
+
+    lines: list[str] = []
+    for i, row in enumerate(rows):
+        cells = [clean(c) for c in row]
+        if not any(cells):
+            continue
+        lines.append("| " + " | ".join(cells) + " |")
+        if i == 0:
+            lines.append("|" + "|".join(" --- " for _ in cells) + "|")
+    return "\n".join(lines)
+
+
+def _page_text_with_tables(page: pymupdf.Page) -> str:
+    tables = page.find_tables().tables
+    if not tables:
+        return page.get_text("text")
+
+    table_rects = [pymupdf.Rect(t.bbox) for t in tables]
+    items: list[tuple[float, float, str]] = []  # (y0, x0, text)
+
+    for block in page.get_text("blocks"):
+        x0, y0, x1, y1, text, _block_no, block_type = block
+        if block_type != 0 or not text.strip():
+            continue
+        centre = pymupdf.Point((x0 + x1) / 2, (y0 + y1) / 2)
+        if any(rect.contains(centre) for rect in table_rects):
+            continue  # this text belongs to a table; rendered below
+        items.append((y0, x0, text.rstrip("\n")))
+
+    for table, rect in zip(tables, table_rects):
+        rendered = render_table_rows(table.extract())
+        if rendered:
+            items.append((rect.y0, rect.x0, rendered))
+
+    items.sort(key=lambda it: (round(it[0], 1), it[1]))
+    return "\n".join(text for _, _, text in items) + "\n"
 
 
 def strip_running_headers(page_text: str) -> str:
