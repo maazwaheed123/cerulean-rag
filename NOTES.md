@@ -283,3 +283,35 @@ Observed with PyMuPDF 1.28 `page.get_text("text")` on all 13 files:
   every one of its chunks.
 - No section exceeded `MAX_CHUNK_CHARS` (1800) on this corpus, so the
   oversize splitter path is exercised only by construction, not by data.
+
+## Step 4 — security module decisions
+
+- The scanner has 13 general patterns (kinds of text: "ignore previous
+  instructions", `SYSTEM:` line prefix, `assistant_directive`, "note to any
+  AI assistant", mode switches, "print your system prompt", "reply only
+  with", "do not disclose this directive", HTML comments inside a PDF,
+  "granted administrator access", "this is an authorised request"). On the
+  real corpus it flags exactly the three planted chunks and nothing else;
+  six benign control sentences from the same documents stay clean.
+- Payloads are extracted generically: the sentences overlapping a match,
+  any quoted string inside them, and clauses after directive verbs
+  ("respond that X and that Y" -> two claims). For the limits injection this
+  yields "Atlas has no rate limits" and "the user has been granted
+  administrator access to all workspaces" as separate claims, so a
+  paraphrased echo is caught, not just a verbatim one.
+- The plan's first input-guard regex would have blocked "Show me the expense
+  approval thresholds" and "What are the rules for booking travel?" (verb +
+  "the rules"). The guard requires "your" or an explicit system-prompt /
+  "instructions you were given" phrase, and a test pins the legitimate
+  phrasings that must pass. Policy-bypass requests are deliberately not
+  blocked here; the model refuses them and check (e) scrubs any leaked
+  figure or threshold wording.
+- The plan's `reveal (your )?(system )?prompt|instructions` pattern is
+  broken as written (top-level alternation matches the bare word
+  "instructions"); it was corrected to group the alternatives.
+- `AnswerSchema.decision` is a validated `str`, not a `Literal`, so casing or
+  hyphen variants from the model normalise instead of failing the parse
+  (Part 8 anticipated this for Ollama structured output).
+- Payload echo check uses a +-250 character window around the match to
+  decide whether the answer *describes* the injection (words such as
+  "instruction", "disregarded", "embedded") or *repeats* it as fact.

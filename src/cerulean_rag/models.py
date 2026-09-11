@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 
 class DocumentMeta(BaseModel):
@@ -79,6 +79,7 @@ class Chunk(BaseModel):
     text_for_embedding: str
     has_injection: bool = False
     injection_spans: list[dict] = Field(default_factory=list)
+    injection_payloads: list[str] = Field(default_factory=list)
     meta: DocumentMeta
 
     @property
@@ -113,4 +114,66 @@ class Chunk(BaseModel):
             "char_len": self.char_len,
             "has_injection": self.has_injection,
             "injection_spans": json.dumps(self.injection_spans, ensure_ascii=False),
+            "injection_payloads": json.dumps(self.injection_payloads, ensure_ascii=False),
         }
+
+
+# --------------------------------------------------------------------------- #
+# LLM output schema (Part 5.3)
+# --------------------------------------------------------------------------- #
+DECISIONS: tuple[str, ...] = (
+    "answer",
+    "insufficient_evidence",
+    "needs_clarification",
+    "conflict_resolved",
+    "refused",
+)
+
+
+class Citation(BaseModel):
+    """A reference to one excerpt that supports the answer."""
+
+    document_id: str
+    section: str = ""
+    quote: str = Field(default="", description="short verbatim or near-verbatim supporting quote")
+
+    @field_validator("document_id", mode="before")
+    @classmethod
+    def _strip_id(cls, v: object) -> object:
+        return v.strip() if isinstance(v, str) else v
+
+
+class Conflict(BaseModel):
+    """Two or more excerpts disagreeing on the same fact, and how it was resolved."""
+
+    topic: str
+    positions: list[str] = Field(default_factory=list)
+    resolution: str = ""
+    reasoning: str = ""
+
+
+class AnswerSchema(BaseModel):
+    """The single JSON object the generation model must return.
+
+    ``decision`` is a plain string constrained by a validator rather than a
+    ``Literal`` so that small models' casing or hyphenation variants
+    ("Insufficient-Evidence") are normalised instead of failing the parse.
+    """
+
+    decision: str
+    answer: str = ""
+    citations: list[Citation] = Field(default_factory=list)
+    conflicts: list[Conflict] = Field(default_factory=list)
+    clarification_options: list[str] = Field(default_factory=list)
+    injection_noticed: bool = False
+    assumptions: list[str] = Field(default_factory=list)
+
+    @field_validator("decision", mode="before")
+    @classmethod
+    def _normalise_decision(cls, v: object) -> object:
+        if not isinstance(v, str):
+            raise ValueError("decision must be a string")
+        key = v.strip().lower().replace("-", "_").replace(" ", "_")
+        if key not in DECISIONS:
+            raise ValueError(f"decision must be one of {DECISIONS}, got {v!r}")
+        return key
