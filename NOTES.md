@@ -214,3 +214,37 @@ Notes:
   Fixed with `.gitattributes`: `* text=auto eol=lf` plus `*.pdf binary`.
   The copied corpus was SHA-256 compared against the original pack before
   the first commit.
+
+## Step 2 — loaders (what the PDFs actually look like)
+
+Observed with PyMuPDF 1.28 `page.get_text("text")` on all 13 files:
+
+- The running header is TWO lines, not one: `Cerulean Systems Ltd.  |  <ID>`
+  (two spaces around the bar) followed by `Page <n>`. There is no separate
+  footer text in the extraction. The loader drops both lines wherever they
+  occur; body text mentioning "Cerulean Systems Ltd." is preserved.
+- Page 1 then has a banner (`CERULEAN SYSTEMS` / `Internal|External`), the
+  title, an optional subtitle line, and the metadata block as alternating
+  label / value lines (`Document ID`, `HR-POL-002`, `Version`, `4.1`, ...).
+- The PDF `Supersedes` value carries a parenthetical date the manifest does
+  not have, e.g. `HR-POL-002 v3.6 (1 January 2024)`. It is stripped before
+  comparing with the manifest. In PROD-DOC-009 that value wraps onto a
+  second line (`(10 November` / `2025)`), so the parser continues a value
+  while a parenthesis is unclosed.
+- SUP-FAQ-001 has `Review status` / `Overdue — last reviewed February 2025`
+  instead of `Supersedes`; this is captured as `review_status`.
+- Tables extract as one cell per line, in row order (e.g. `Atlas Professional`
+  / `SAR 4,500` / `Up to 50` / `500 GB`). Cell separation is intact, so the
+  `page.find_tables()` fallback from the plan was not needed. Step 3 must
+  keep each table with its heading in one chunk.
+- Bullets are `•`; em dashes are `—` (U+2014). Titles differ between PDF
+  and manifest only by that dash: `Customer Terms — Refunds and Cancellations`
+  vs manifest `Customer Terms - Refunds and Cancellations`, and
+  `Atlas Platform — Customer FAQ` / `Atlas Platform — Technical Limits and
+  Service Levels` vs manifest titles with no dash at all. The cross-check
+  treats a spaced dash as a space, so these do not warn. The manifest title
+  is what the system uses.
+- Windows console (cp1252) cannot print `—`; the CLI in Step 8 must force
+  UTF-8 stdout (`PYTHONIOENCODING=utf-8` or `sys.stdout.reconfigure`).
+- Manifest is the authority for metadata; the PDF header is a cross-check
+  logged at WARNING on disagreement. On this corpus there are none.
