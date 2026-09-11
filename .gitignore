@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Local runtime artefacts (rebuilt by scripts/ingest.py)
+data/chroma/
+data/chunks.jsonl
+logs/
+
+# Local configuration (copy .env.example -> .env)
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

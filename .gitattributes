@@ -1,0 +1,7 @@
+# Normalise text files to LF in the repository; keep binaries untouched.
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.jpg binary
+# PowerShell scripts, if any, keep CRLF for Windows hosts
+*.ps1 text eol=crlf

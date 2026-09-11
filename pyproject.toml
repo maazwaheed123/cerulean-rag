@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cerulean-rag"
+version = "0.1.0"
+description = "Grounded RAG assistant over the Cerulean Systems document corpus (local Ollama models)."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ollama: tests that need a running Ollama server (skipped when it is not reachable)",
+]

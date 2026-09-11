@@ -1,0 +1,15 @@
+langchain==1.4.0
+langchain-core==1.6.2
+langchain-community==0.4.2
+langchain-ollama==1.1.0
+langchain-chroma==1.1.0
+langchain-text-splitters==1.1.2
+chromadb==1.5.9
+pymupdf==1.28.2
+rank-bm25==0.2.2
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+rich==15.0.0
+pytest==9.1.1
