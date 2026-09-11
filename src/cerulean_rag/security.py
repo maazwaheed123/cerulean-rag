@@ -263,6 +263,47 @@ def _framed_as_disregarded(norm_answer: str, position: int) -> bool:
     return any(w in window for w in _FRAMING_WORDS)
 
 
+_SHINGLE_STOP = frozenset("""a an and are as at be by for from has have in is it its of on or that the this to was
+were with you your do not any all when user users about only must""".split())
+SHORT_PAYLOAD_MAX_WORDS = 12
+SHINGLE_SIZE = 3
+
+
+def payload_shingles(payload: str) -> list[str]:
+    """3-word fragments of a SHORT payload (a claim or quoted sentence), so a paraphrase
+    such as "there are no rate limits" is still caught. Long sentences are matched only
+    as a whole (in :func:`find_payload_echo`) to avoid false positives on ordinary words."""
+    words = normalise(payload).split()
+    if len(words) > SHORT_PAYLOAD_MAX_WORDS:
+        return []
+    out: list[str] = []
+    for i in range(0, len(words) - SHINGLE_SIZE + 1):
+        sh = words[i: i + SHINGLE_SIZE]
+        if sum(w not in _SHINGLE_STOP for w in sh) >= 2:
+            out.append(" ".join(sh))
+    return out
+
+
+def find_payload_echo(text: str, payloads: list[str]) -> tuple[str, int] | None:
+    """Return (payload, position) if ``text`` repeats a payload verbatim (normalised) or
+    contains a 3-word fragment of a short payload; None otherwise."""
+    norm = normalise(text)
+    if not norm:
+        return None
+    for payload in payloads:
+        norm_payload = normalise(payload)
+        if len(norm_payload) < MIN_PAYLOAD_CHARS:
+            continue
+        pos = norm.find(norm_payload)
+        if pos >= 0:
+            return payload, pos
+        for sh in payload_shingles(payload):
+            pos = norm.find(sh)
+            if pos >= 0:
+                return payload, pos
+    return None
+
+
 def verify_answer(
     parsed: AnswerSchema,
     retrieved: list[Chunk],
@@ -287,25 +328,43 @@ def verify_answer(
     fixed.citations = kept
 
     # (b) answer must not repeat an injection payload as fact
+    payloads: list[str] = []
+    payload_owner: dict[str, str] = {}
     for chunk in retrieved:
-        if not chunk.has_injection:
-            continue
-        for payload in chunk.injection_payloads:
-            norm_payload = normalise(payload)
-            if len(norm_payload) < MIN_PAYLOAD_CHARS:
+        if chunk.has_injection:
+            for p in chunk.injection_payloads:
+                payloads.append(p)
+                payload_owner.setdefault(p, chunk.chunk_id)
+    if payloads:
+        hit = find_payload_echo(fixed.answer, payloads)
+        if hit and not _framed_as_disregarded(norm_answer, hit[1]):
+            blocked = True
+            blocked_reason = f"answer repeats injected text from {payload_owner[hit[0]]}"
+            warnings.append(blocked_reason)
+            log.warning("%s: %r", blocked_reason, hit[0][:80])
+            fixed.answer = SAFE_INJECTION_MESSAGE
+            fixed.injection_noticed = True
+
+        # (b2) injected text must not be used as evidence in the structured fields either
+        kept_conflicts = []
+        for cf in fixed.conflicts:
+            cf_text = " ".join([cf.topic, *cf.positions, cf.resolution, cf.reasoning])
+            if find_payload_echo(cf_text, payloads):
+                warnings.append(f"dropped conflict entry '{cf.topic[:40]}' that used injected text as evidence")
+                fixed.injection_noticed = True
                 continue
-            pos = norm_answer.find(norm_payload)
-            if pos >= 0 and not _framed_as_disregarded(norm_answer, pos):
-                blocked = True
-                blocked_reason = f"answer repeats injected text from {chunk.chunk_id}"
-                warnings.append(blocked_reason)
-                log.warning("%s: %r", blocked_reason, payload[:80])
-                break
-        if blocked:
-            break
-    if blocked:
-        fixed.answer = SAFE_INJECTION_MESSAGE
-        fixed.injection_noticed = True
+            kept_conflicts.append(cf)
+        fixed.conflicts = kept_conflicts
+        if fixed.decision == "conflict_resolved" and not fixed.conflicts:
+            fixed.decision = "answer"
+            warnings.append("no conflicts remained after removing injected evidence; decision set to answer")
+        for field_name in ("assumptions", "clarification_options"):
+            items = getattr(fixed, field_name)
+            clean = [x for x in items if not find_payload_echo(x, payloads)]
+            if len(clean) != len(items):
+                warnings.append(f"dropped {len(items) - len(clean)} {field_name} item(s) that used injected text")
+                fixed.injection_noticed = True
+            setattr(fixed, field_name, clean)
 
     # (c) numeric grounding: figures in the answer should exist in the context
     if not blocked and fixed.decision != "refused":

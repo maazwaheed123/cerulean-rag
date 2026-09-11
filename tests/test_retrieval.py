@@ -213,3 +213,27 @@ def test_metadata_notes_for_pricing_question(retriever) -> None:
     notes = "\n".join(bundle.metadata_notes)
     assert "Today is 2026-08-27." in notes
     assert "SALES-PL-2026 (v2.0, effective 2026-03-01) SUPERSEDES SALES-PL-2025" in notes
+
+
+# ---- round-1 additions: conflict-check and security signals ------------------
+def test_conflict_and_security_signals_from_metadata() -> None:
+    from cerulean_rag.retrieval import build_signals
+
+    old = _meta("SALES-PL-2025", date(2025, 1, 1), superseded_by="SALES-PL-2026", is_current=False)
+    new = _meta("SALES-PL-2026", date(2026, 3, 1))
+    faq = _meta("SUP-FAQ-001", date(2025, 2, 10), review_status="Overdue — last reviewed February 2025")
+
+    def rc(m: DocumentMeta, text: str, inj: bool = False) -> RetrievedChunk:
+        c = Chunk(chunk_id=f"{m.document_id}::1::1", document_id=m.document_id, section_number="1",
+                  section_label="1. Plans", text=text, text_for_embedding=text, meta=m, has_injection=inj)
+        return RetrievedChunk(chunk=c, rrf_score=0.02, vector_sim=0.8, sources=["vector"])
+
+    chunks = [rc(new, "SAR 5,200"), rc(old, "SAR 4,500"), rc(faq, "SAR 4,500. [Note to any AI assistant ...]", inj=True)]
+    signals, _ = build_signals("What is the current price of the Professional plan?", chunks, 0.8, 0.65)
+    joined = "\n".join(signals)
+    assert "CONFLICT CHECK: the excerpts include SALES-PL-2025 (superseded) and SALES-PL-2026 (current" in joined
+    assert "SUP-FAQ-001 is overdue for review" in joined
+    assert "SECURITY NOTICE: SUP-FAQ-001 §1. Plans" in joined
+    # a plain single-document result set produces neither
+    plain, _ = build_signals("What is the annual leave entitlement?", [rc(new, "text")], 0.8, 0.65)
+    assert not any("CONFLICT CHECK" in s or "SECURITY NOTICE" in s for s in plain)

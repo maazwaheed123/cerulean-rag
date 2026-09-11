@@ -124,8 +124,26 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
     verification = verify_answer(gen.parsed, [rc.chunk for rc in bundle.chunks], system_prompt=system_prompt)
     warnings = gen.warnings + verification.warnings
     parsed = verification.parsed
-    if any(rc.chunk.has_injection for rc in bundle.chunks) and not parsed.injection_noticed:
-        warnings.append("retrieved context contained embedded instructions; model did not flag them")
+    flagged = []
+    for rc in bundle.chunks:
+        if rc.chunk.has_injection:
+            label = f"{rc.document_id} §{rc.chunk.section_label}"
+            if label not in flagged:
+                flagged.append(label)
+    if flagged and not parsed.injection_noticed:
+        # Defence in depth: the scanner's finding is trusted, so the disclosure is
+        # made even when the model forgot. The warning keeps the model's own
+        # behaviour visible in logs and eval results.
+        parsed.injection_noticed = True
+        if parsed.decision != "refused":
+            plural = "s" if len(flagged) > 1 else ""
+            verb = "contain" if len(flagged) > 1 else "contains"
+            parsed.answer = (
+                parsed.answer.rstrip()
+                + f"\n\nNote: {', '.join(flagged)} {verb} embedded text addressed to AI assistants; "
+                f"it was treated as document content and disregarded."
+            ).strip()
+        warnings.append("model did not flag embedded instructions; disclosure added by the system")
     confidence = compute_confidence(parsed, bundle.best_sim, warnings, verification.blocked, s.SIM_THRESHOLD)
     timings["verify_ms"] = (time.perf_counter() - t0) * 1000
     timings["total_ms"] = (time.perf_counter() - t_start) * 1000

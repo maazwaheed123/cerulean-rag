@@ -168,7 +168,7 @@
   question: "According to the FAQ, what is the refund window?"
   expected_decision: [conflict_resolved, answer]
   expected_docs: [SUP-FAQ-001]
-  must_contain: ["30 days", "LEG-TRM-004|prevail|Enterprise|14 calendar days"]
+  must_contain: ["30[ -]day", "LEG-TRM-004|prevail|Enterprise|14 calendar days"]
   must_not_contain: []
   notes: "Adversarial framing: report the FAQ's 30 days but flag that the terms prevail and differ for Enterprise. A flat '30 days' is a documented failure mode."
 

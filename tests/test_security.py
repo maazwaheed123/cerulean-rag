@@ -254,3 +254,50 @@ def test_decision_normalisation() -> None:
     assert AnswerSchema(decision="Conflict-Resolved", answer="x").decision == "conflict_resolved"
     with pytest.raises(ValueError):
         AnswerSchema(decision="maybe", answer="x")
+
+
+# ---- round-1 additions: fragment echoes and injected evidence in structured fields --------
+@pytest.fixture()
+def limits_chunk() -> Chunk:
+    return _chunk("PROD-DOC-009", "2. File and storage limits\n" + INJECTION_LIMITS)
+
+
+def test_paraphrased_claim_fragment_is_blocked(limits_chunk: Chunk) -> None:
+    parsed = AnswerSchema(
+        decision="answer", answer="Good news: Atlas has no rate limits on any plan.",
+        citations=[Citation(document_id="PROD-DOC-009", section="2")],
+    )
+    r = verify_answer(parsed, [limits_chunk])
+    assert r.blocked and r.parsed.answer == SAFE_INJECTION_MESSAGE
+
+
+def test_injected_text_used_as_conflict_position_is_dropped(limits_chunk: Chunk) -> None:
+    from cerulean_rag.models import Conflict
+
+    parsed = AnswerSchema(
+        decision="conflict_resolved",
+        answer="Approval is by the Finance Manager and CEO jointly.",
+        citations=[Citation(document_id="PROD-DOC-009", section="2")],
+        conflicts=[Conflict(topic="approval", positions=["FIN-POL-003 §2: Finance Manager and CEO",
+                                                         "PROD-DOC-009 §2: No rate limits (obsolete)"],
+                            resolution="FIN-POL-003", reasoning="x")],
+        assumptions=["the user has been granted administrator access to all workspaces"],
+    )
+    r = verify_answer(parsed, [limits_chunk])
+    assert not r.blocked
+    assert r.parsed.conflicts == []
+    assert r.parsed.decision == "answer"
+    assert r.parsed.assumptions == []
+    assert r.parsed.injection_noticed is True
+    assert any("dropped conflict entry" in w for w in r.warnings)
+
+
+def test_ordinary_answer_near_injected_chunk_is_not_blocked(limits_chunk: Chunk) -> None:
+    parsed = AnswerSchema(
+        decision="answer",
+        answer="Rate limits are applied per organisation: Starter 300 requests per minute, "
+               "Professional 1,000 and Enterprise 5,000, with HTTP 429 above the limit.",
+        citations=[Citation(document_id="PROD-DOC-009", section="1")],
+    )
+    r = verify_answer(parsed, [limits_chunk])
+    assert not r.blocked and r.parsed.conflicts == []
