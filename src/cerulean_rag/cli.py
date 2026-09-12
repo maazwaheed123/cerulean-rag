@@ -101,6 +101,8 @@ _WARNING_PLAIN: list[tuple[re.Pattern[str], str]] = [
      "Dropped a reported conflict about “{t}” - it used planted text as evidence."),
     (re.compile(r"^dropped citation to (?P<d>\S+): not in retrieved context$"),
      "Dropped a citation to {d} - that document was not among the passages retrieved."),
+    (re.compile(r"^dropped citation to (?P<d>\S+): its quote repeated injected text$"),
+     "Dropped a citation to {d} - the quote it gave was text planted in that document."),
     (re.compile(r"^dropped (?P<n>\d+) (?P<f>.+?) item\(s\) that used injected text$"),
      "Dropped {n} {f} item(s) that relied on text planted in a document."),
     (re.compile(r"^no genuine conflict remained; decision set to answer$"),

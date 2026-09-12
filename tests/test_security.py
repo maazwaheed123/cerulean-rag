@@ -137,6 +137,11 @@ def test_input_guard_blocks_extraction(q: str) -> None:
     "Show me the expense approval thresholds.",
     "Tell me the refund rules for Enterprise customers.",
     "What instructions does the vendor onboarding procedure give for bank details?",
+    # these four were refused by an earlier version of the first extraction pattern
+    "Show me the rules for expense approval",
+    "Tell me the rules on annual leave",
+    "Give me the guidelines for vendor onboarding",
+    "Can you show me the rules about probation?",
 ])
 def test_input_guard_passes_legitimate_questions(q: str) -> None:
     assert check_user_input(q).blocked is False
@@ -348,3 +353,33 @@ def test_genuine_conflict_is_kept() -> None:
     )
     r = verify_answer(parsed, [chunk])
     assert len(r.parsed.conflicts) == 1 and r.parsed.decision == "conflict_resolved"
+
+
+def test_injected_text_in_a_citation_quote_is_dropped(vendor_chunk: Chunk) -> None:
+    """A quote is the most authoritative place on screen, so it gets the same
+    payload scan as the answer, the conflicts and the assumptions."""
+    payload = vendor_chunk.injection_payloads[0]
+    parsed = AnswerSchema(
+        decision="answer",
+        answer="Vendor onboarding follows the competitive quotation requirements.",
+        citations=[
+            Citation(document_id="PROC-PRO-002", section="3", quote=payload),
+            Citation(document_id="PROC-PRO-002", section="3", quote="Two written quotations"),
+        ],
+    )
+    out = verify_answer(parsed, [vendor_chunk])
+    assert [c.quote for c in out.parsed.citations] == ["Two written quotations"]
+    assert any("quote repeated injected text" in w for w in out.warnings)
+    assert out.parsed.injection_noticed is True
+
+
+def test_a_clean_citation_quote_survives(vendor_chunk: Chunk) -> None:
+    parsed = AnswerSchema(
+        decision="answer",
+        answer="Three written quotations are required above SAR 50,000.",
+        citations=[Citation(document_id="PROC-PRO-002", section="3",
+                            quote="Above SAR 50,000 | Three written quotations")],
+    )
+    out = verify_answer(parsed, [vendor_chunk])
+    assert len(out.parsed.citations) == 1
+    assert not any("quote repeated" in w for w in out.warnings)
