@@ -272,7 +272,10 @@ def date_span_signal(question: str, as_of) -> str | None:
         return None
     start, end = dates[0], dates[1]
     if end < start:  # e.g. "20 November to 10 February" without years
-        end = _date(end.year + 1, end.month, end.day)
+        try:
+            end = _date(end.year + 1, end.month, end.day)
+        except ValueError:  # 29 February rolled forward into a non-leap year
+            end = _date(end.year + 1, end.month, 28)
     if (end - start).days > 366 * 3:
         return None
     parts: list[str] = []
@@ -521,6 +524,20 @@ class Retriever:
         )
 
 
-@lru_cache(maxsize=1)
-def get_retriever() -> Retriever:
-    return Retriever(get_settings())
+_RETRIEVER_CACHE: dict[tuple, Retriever] = {}
+
+
+def get_retriever(settings: Settings | None = None) -> Retriever:
+    """One retriever per distinct index and retrieval configuration.
+
+    Keyed on the settings the retriever actually reads, so a caller that points
+    at another corpus, or changes TOP_K, gets a retriever that honours it rather
+    than the process-wide default.
+    """
+    s = settings or get_settings()
+    key = (str(s.CHUNKS_FILE), str(s.CHROMA_DIR), s.COLLECTION_NAME, s.EMBED_MODEL,
+           s.OLLAMA_BASE_URL, s.TOP_K, s.RETRIEVE_K_PER_SOURCE, s.SIM_THRESHOLD, s.USE_BM25)
+    cached = _RETRIEVER_CACHE.get(key)
+    if cached is None:
+        cached = _RETRIEVER_CACHE[key] = Retriever(s)
+    return cached

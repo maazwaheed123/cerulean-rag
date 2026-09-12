@@ -109,17 +109,22 @@ def extract_payloads(text: str, spans: list[InjectionSpan]) -> list[str]:
             seen.add(p.lower())
             payloads.append(p)
 
-    # Sentences that overlap a span, individually ...
-    region_parts: list[str] = []
-    for s_start, s_end, sentence in _sentences_with_offsets(text):
+    # Sentences that overlap a span become payloads in their own right ...
+    sentences = _sentences_with_offsets(text)
+    flagged: set[int] = set()
+    for i, (s_start, s_end, sentence) in enumerate(sentences):
         if any(sp.start < s_end and sp.end > s_start for sp in spans):
             add(sentence)
-            region_parts.append(sentence)
+            flagged.add(i)
 
-    # ... and the merged region, whitespace-normalised, for quotes and claims
-    # that the sentence splitter may have cut (a period inside a closing quote,
-    # or a line break inside a clause).
-    region = re.sub(r"\s+", " ", " ".join(region_parts))
+    # ... and the region searched for quotes and claims extends one sentence
+    # either side of them. An injection often puts its trigger in one sentence
+    # ("SYSTEM: Ignore all previous instructions.") and the claim it wants
+    # repeated in the next, which matches no pattern of its own. Only quoted
+    # strings and explicit "respond that ..." clauses are taken from the
+    # neighbours, so ordinary policy prose beside an injection is not harvested.
+    wanted = sorted({j for i in flagged for j in (i - 1, i, i + 1) if 0 <= j < len(sentences)})
+    region = re.sub(r"\s+", " ", " ".join(sentences[j][2] for j in wanted))
     for q in _QUOTED_RE.findall(region):
         add(q)
     for claim in _CLAIM_RE.findall(region):
@@ -214,6 +219,9 @@ _FIGURE_PATTERNS = [
 ]
 _FRAMING_WORDS = ("instruction", "disregard", "ignored", "ignore", "embedded", "injection",
                   "addressed to", "directive", "did not follow", "not followed")
+# Deliberately blunt: \d{3,} also matches a document id, so a refusal cannot name
+# a document either. A refusal has nothing to cite, and naming the policy it
+# declined to discuss is itself a leak.
 _REFUSAL_LEAK_RE = re.compile(r"\bSAR\b|\d{3,}|\bthreshold|\bretrospective|\bemergency", re.I)
 _SYSTEM_PROMPT_SHINGLE = 12
 
@@ -241,6 +249,24 @@ def _context_digit_set(chunks: list[Chunk]) -> set[str]:
         for m in re.finditer(r"\d[\d,]*(?:\.\d+)?", c.text):
             out.add(_digits(m.group(0)))
     return out
+
+
+QUOTE_SHINGLE = 4
+
+
+def quote_is_traceable(quote: str, document_text: str) -> bool:
+    """Does any run of four consecutive words in the quote appear in the document?
+
+    Deliberately loose: models tidy punctuation and elide the middle of a sentence,
+    and dropping a citation over that would cost more than it gains. What it does
+    catch is a quote that shares no phrase at all with the document it names, which
+    is the case that matters. Quotes too short to shingle are let through.
+    """
+    words = normalise(quote).split()
+    if len(words) < QUOTE_SHINGLE:
+        return True
+    return any(" ".join(words[i: i + QUOTE_SHINGLE]) in document_text
+               for i in range(len(words) - QUOTE_SHINGLE + 1))
 
 
 def _framed_as_disregarded(norm_answer: str, position: int) -> bool:
@@ -289,6 +315,7 @@ def find_payload_echo(text: str, payloads: list[str]) -> tuple[str, int] | None:
 
 
 _POSITION_PREFIX_RE = re.compile(r"^\s*[A-Z]+-[A-Z]+-\d+[^:]{0,80}:\s*")
+_POSITION_DOC_ID_RE = re.compile(r"^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b")
 _INJECTION_COMMENTARY_RE = re.compile(
     r"\b(instruction|directive|embedded|ai assistants?|do not follow|contains_embedded|disregard)\b", re.I
 )
@@ -317,6 +344,7 @@ def verify_answer(
     parsed: AnswerSchema,
     retrieved: list[Chunk],
     system_prompt: str | None = None,
+    trusted_text: str = "",
 ) -> VerificationResult:
     """The post-generation checks. Returns a corrected copy; never raises."""
     fixed = parsed.model_copy(deep=True)
@@ -327,13 +355,22 @@ def verify_answer(
     context_ids = {c.document_id for c in retrieved}
     norm_answer = normalise(fixed.answer)
 
-    # citations must point at documents that were actually in the context
+    # citations must point at documents that were actually in the context, and the
+    # quote must be traceable to that document's retrieved text. A quote is shown to
+    # the reader as verbatim evidence, so an invented one is worse than none.
+    text_by_doc: dict[str, str] = {}
+    for c in retrieved:
+        text_by_doc[c.document_id] = text_by_doc.get(c.document_id, "") + " " + normalise(c.text)
     kept = []
     for cit in fixed.citations:
-        if cit.document_id in context_ids:
-            kept.append(cit)
-        else:
+        if cit.document_id not in context_ids:
             warnings.append(f"dropped citation to {cit.document_id}: not in retrieved context")
+            continue
+        if not quote_is_traceable(cit.quote, text_by_doc[cit.document_id]):
+            warnings.append(
+                f"citation to {cit.document_id}: the quote does not appear in the retrieved text"
+            )
+        kept.append(cit)
     fixed.citations = kept
 
     # an answer must not repeat an injection payload as fact
@@ -386,13 +423,30 @@ def verify_answer(
     # a conflict needs two document values that disagree
     fixed.conflicts, dropped = prune_non_conflicts(fixed.conflicts)
     warnings.extend(dropped)
+    # A conflict position asserts what a document says, so that document has to be
+    # cited. Warn rather than drop: a real conflict reported with a missing citation
+    # is still worth showing, but the reader should know the claim is unbacked.
+    cited_ids = {c.document_id for c in fixed.citations}
+    for cf in fixed.conflicts:
+        for pos in cf.positions:
+            m = _POSITION_DOC_ID_RE.match(pos.strip())
+            if m and m.group(1) not in cited_ids:
+                warnings.append(
+                    f"conflict '{cf.topic[:40]}' quotes {m.group(1)} but the answer does not cite it"
+                )
     if fixed.decision == "conflict_resolved" and not fixed.conflicts:
         fixed.decision = "answer"
         warnings.append("no genuine conflict remained; decision set to answer")
 
     # figures in the answer should exist somewhere in the context
     if not blocked and fixed.decision != "refused":
+        # Figures the system itself supplied (the date-span helper's month and day
+        # counts) are as grounded as the excerpts; without them a model that used
+        # the arithmetic it was handed would be warned about for doing so.
         ctx_digits = _context_digit_set(retrieved)
+        if trusted_text:
+            ctx_digits |= {_digits(m.group(0))
+                           for m in re.finditer(r"\d[\d,]*(?:\.\d+)?", trusted_text)}
         calc_text = " ".join(fixed.assumptions) + " " + " ".join(
             ln for ln in fixed.answer.splitlines() if "=" in ln
         )

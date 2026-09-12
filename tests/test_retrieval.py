@@ -326,3 +326,26 @@ def test_system_prompt_defers_to_the_date_span_helper() -> None:
     assert "which single band applies" in prompt
     assert "its outcome is not the answer to this question" in prompt
     assert "exactly one final figure, never two" in prompt
+
+
+def test_date_span_handles_a_leap_day_rolled_into_a_non_leap_year() -> None:
+    """The end-before-start branch adds a year, and 29 February does not survive it."""
+    from datetime import date
+
+    from cerulean_rag.retrieval import date_span_signal
+
+    signal = date_span_signal("A contractor works from 1 December to 29 February 2024.", date(2024, 8, 27))
+    assert signal is not None
+    assert "DATE SPAN HELPER" in signal
+
+
+def test_get_retriever_honours_the_settings_it_is_given(tmp_path) -> None:
+    """Two different index locations must not share one cached retriever."""
+    from cerulean_rag.config import get_settings
+    from cerulean_rag.retrieval import get_retriever
+
+    base = get_settings()
+    a = get_retriever(base)
+    b = get_retriever(base.model_copy(update={"COLLECTION_NAME": "some_other_collection"}))
+    assert a is not b
+    assert get_retriever(base) is a

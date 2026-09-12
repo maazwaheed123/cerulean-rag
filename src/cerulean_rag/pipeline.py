@@ -58,6 +58,8 @@ def _log_record(result: AnswerResult, bundle: RetrievalBundle | None, s: Setting
         "decision": result.parsed.decision,
         "citations": [c.model_dump() for c in result.parsed.citations],
         "conflicts": [c.model_dump() for c in result.parsed.conflicts],
+        "clarification_options": result.parsed.clarification_options,
+        "assumptions": result.parsed.assumptions,
         "injection_noticed": result.parsed.injection_noticed,
         "confidence": result.confidence,
         "blocked": result.blocked,
@@ -95,7 +97,7 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
         return result
 
     t0 = time.perf_counter()
-    r = retriever or get_retriever()
+    r = retriever or get_retriever(s)
     bundle = r.retrieve(question)
     timings["retrieval_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -109,7 +111,10 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
     timings["generation_ms"] = (time.perf_counter() - t0) * 1000
 
     t0 = time.perf_counter()
-    verification = verify_answer(gen.parsed, [rc.chunk for rc in bundle.chunks], system_prompt=system_prompt)
+    verification = verify_answer(
+        gen.parsed, [rc.chunk for rc in bundle.chunks], system_prompt=system_prompt,
+        trusted_text="\n".join(bundle.signals),
+    )
     warnings = gen.warnings + verification.warnings
     parsed = verification.parsed
     flagged = []
