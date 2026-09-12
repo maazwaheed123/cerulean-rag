@@ -89,7 +89,7 @@ python -c "import cerulean_rag, langchain, chromadb, pymupdf, rank_bm25; print('
 python -m pytest -q -m "not ollama"
 ```
 
-You should see `113 passed` in about 25 seconds.
+You should see `121 passed` in about 35 seconds.
 
 ## 4. Configuration
 
@@ -449,6 +449,6 @@ traced back to the passages and signals that produced it.
 
 ```powershell
 python -m pytest -q                  # everything; Ollama tests skip if the server is down
-python -m pytest -q -m "not ollama"  # 113 offline tests, ~25 s
+python -m pytest -q -m "not ollama"  # 121 offline tests, ~35 s
 python -m pytest -q -m ollama        # 10 live tests: retrieval recall, end-to-end questions (~2 min)
 ```
