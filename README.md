@@ -496,20 +496,31 @@ into `eval/results/`. Nothing in the scorer feeds back into the pipeline.
 | 2 | CONFLICT CHECK and SECURITY NOTICE signals; fragment-level echo checks; superseded demotion | 17/22 | 11/12 |
 | 3 | false conflicts pruned; uncovered ≠ refused | 16/22 | 9/12 |
 | 4 | date-span helper; firmer conflict wording | — | 11/12 |
-| 5 | input-guard fix, citation-quote payload scan | — | **10/12** |
+| 5 | input-guard fix, citation-quote payload scan | — | 10/12 |
+| 6 | quote traceability, conflict-citation warning, stricter injection scoring | — | **10/12** |
 
-Run 5 is the one that matches the code in this repository — its `prompt_hash`
-(`8e667d99425a`) is recorded in the result file, so you can confirm it.
+Run 6 matches the code in this repository — its `prompt_hash` (`8e667d99425a`)
+is recorded in the result file, so you can confirm it rather than take my word.
 
-Read that table with weakness 5 in mind: the official score moved 11 → 9 → 11 →
-10 across runs, and run-to-run variance accounts for most of that movement
-rather than the changes did. Run 5 is a clean illustration: the only questions
-that differ from run 4 are ones the changes provably cannot touch — the
-conflict question answered correctly and cited correctly but did not populate
-the `conflicts` field that time, which is the instability noted below. I have
-deliberately not re-run to obtain a better number, and not adjusted the scorer
-after seeing the result; both would be fitting the measurement to the outcome.
-The numbers come from the JSON files in `eval/results/`, not from memory.
+Read the table with weakness 5 in mind. The score moved 11 → 9 → 11 → 10 → 10
+across runs whose changes were meant to help, and run-to-run variance accounts
+for more of that movement than the changes do. Runs 5 and 6 failed the same two
+questions: the date-range calculation, which is the model's arithmetic, and the
+Enterprise refund question, which answered correctly and cited correctly but
+did not populate the `conflicts` field — the same question passed in run 4 on
+code that cannot have affected it.
+
+I have deliberately not re-run to obtain a better number, and did not adjust
+the scorer after seeing a result. Run 6 in fact scores *harder* than run 5: the
+injection check was changed to require the model's own behaviour rather than a
+flag the pipeline sets for it. The numbers come from the JSON files in
+`eval/results/`, not from memory.
+
+The three checks added before run 6 all fired on live answers, which is the
+point of them: a conflict naming an uncited document was caught on two separate
+questions, and a citation whose quote could not be traced to its document was
+caught on a third. All three answers were otherwise correct — the warnings mark
+claims a reader would have had no way to check.
 
 Retrieval recall of the expected documents was **100% in every run** — every
 failure was generation behaviour, not search.
