@@ -1,15 +1,8 @@
-"""The question-answering pipeline: ``ask(question) -> AnswerResult``.
+"""ask(question) -> AnswerResult.
 
-Order of operations for one question (deterministic steps in plain Python,
-exactly one LLM call in the middle):
-
-0. input guard          empty / too long / prompt extraction -> refuse, no LLM
-1-5. retrieval          hybrid search, fusion, signals, metadata notes
-6. prompt assembly      fixed system prompt + per-question human message
-7. generation           structured JSON answer (one retry path inside)
-8. verification         citations, injection echo, figures, refusal leaks,
-                        system-prompt leaks; confidence score
-9. logging              one JSON line per question in logs/queries.jsonl
+Input guard, retrieval, prompt, generation, verification, confidence, log line.
+Everything but generation is deterministic Python; there is exactly one LLM
+call per question, in the middle.
 """
 
 from __future__ import annotations
@@ -32,7 +25,7 @@ log = logging.getLogger(__name__)
 
 def compute_confidence(parsed: AnswerSchema, best_sim: float | None, warnings: list[str],
                        blocked: bool, threshold: float) -> str:
-    """Three-level confidence from retrieval strength, citations and verification outcome."""
+    """From retrieval strength, citations and the verification outcome."""
     if blocked or parsed.decision in {"insufficient_evidence", "refused", "needs_clarification"}:
         return "low"
     if any(("leak" in w) or ("repeats" in w) or ("failed" in w) for w in warnings):
@@ -85,7 +78,6 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
     timings: dict[str, float] = {}
     system_prompt = render_system_prompt(s.AS_OF_DATE)
 
-    # 0. input guard
     t0 = time.perf_counter()
     guard = check_user_input(question)
     timings["guard_ms"] = (time.perf_counter() - t0) * 1000
@@ -102,24 +94,20 @@ def ask(question: str, settings: Settings | None = None, retriever: Retriever | 
         _append_query_log(Path(s.QUERY_LOG), _log_record(result, None, s, system_prompt))
         return result
 
-    # 1-5. retrieval
     t0 = time.perf_counter()
     r = retriever or get_retriever()
     bundle = r.retrieve(question)
     timings["retrieval_ms"] = (time.perf_counter() - t0) * 1000
 
-    # 6. prompt
     t0 = time.perf_counter()
     messages = build_messages(bundle, s.AS_OF_DATE)
     timings["prompt_ms"] = (time.perf_counter() - t0) * 1000
     prompt_chars = sum(len(m.content) for m in messages)
 
-    # 7. generation
     t0 = time.perf_counter()
     gen = generate(messages, s)
     timings["generation_ms"] = (time.perf_counter() - t0) * 1000
 
-    # 8. verification + confidence
     t0 = time.perf_counter()
     verification = verify_answer(gen.parsed, [rc.chunk for rc in bundle.chunks], system_prompt=system_prompt)
     warnings = gen.warnings + verification.warnings

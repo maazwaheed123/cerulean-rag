@@ -44,12 +44,50 @@ def test_render_result_shows_all_blocks() -> None:
     assert "SAR 5,200" in out
     assert "the documents disagreed" in out                      # plain-English gloss on the badge
     assert "Where this comes from" in out and "SALES-PL-2026" in out
-    assert "Why the documents disagreed" in out and "SUP-FAQ-001: 4,500" in out
+    # positions are split into a source column and a value column
+    assert "Why the documents disagreed" in out and "SUP-FAQ-001" in out and "4,500" in out
+    assert "RESOLVED" in out
     # the audit warning is shown in plain English, not in its internal wording
     assert "does not appear in any retrieved passage" in out
     assert "not found in retrieved context" not in out
     assert "retrieval 2.6 s" in out and "generation 235.6 s" in out
     assert "Passages retrieved" in out and "0.810" in out
+
+
+def test_long_text_keeps_its_indent_when_wrapped() -> None:
+    """Regression: rich applies an f-string's leading spaces to the first line only,
+    so long conflict reasoning and long signals used to wrap back to column 0."""
+    long_reason = ("SALES-PL-2026 is the current superseding document and provides the current "
+                   "price, while SUP-FAQ-001 is marked as overdue for review and is therefore "
+                   "weaker evidence wherever the two disagree on a figure.")
+    long_signal = ("CONFLICT CHECK: the excerpts include SALES-PL-2025 (superseded) and "
+                   "SALES-PL-2026 (current; it supersedes SALES-PL-2025). If BOTH documents state "
+                   "a value for the item asked about and the values differ, you MUST record it.")
+    result = _result()
+    result.parsed.conflicts[0].reasoning = long_reason
+    result.parsed.assumptions = [long_reason]
+    result.signals = [long_signal]
+
+    console, buf = _console()
+    render_result(result, console, show_context=True)
+    lines = buf.getvalue().splitlines()
+
+    # every wrapped fragment of the long strings stays indented
+    for fragment in ("weaker evidence wherever", "you MUST record it"):
+        owners = [ln for ln in lines if fragment in ln]
+        assert owners, f"{fragment!r} was not rendered"
+        for ln in owners:
+            assert ln.startswith(" "), f"wrapped line lost its indent: {ln!r}"
+
+
+def test_table_quotes_are_cleaned_for_display() -> None:
+    from cerulean_rag.cli import clean_quote, split_position
+
+    assert clean_quote("SAR 5,200 | Up to 50 | 500 GB") == "SAR 5,200 · Up to 50 · 500 GB"
+    assert clean_quote("| Limit | --- | 10 MB |") == "Limit · 10 MB"
+    assert clean_quote('  "plain  sentence"  ') == "plain sentence"
+    assert split_position("SALES-PL-2026 §1: SAR 5,200 per month") == ("SALES-PL-2026 §1", "SAR 5,200 per month")
+    assert split_position("no prefix here") == ("", "no prefix here")
 
 
 def test_parser_subcommands() -> None:

@@ -1,14 +1,12 @@
-"""Command-line interface: ``ask`` (one question) and ``chat`` (REPL).
+"""ask (one question) and chat (a REPL).
 
     python -m cerulean_rag.cli ask "How much notice during probation?" [--json] [--show-context] [--model TAG]
     python -m cerulean_rag.cli chat
 
-Each chat turn is independent: there is no conversation memory. That is a
-deliberate choice (memory would let an earlier injected instruction persist
-across turns and makes evaluation non-reproducible); it is listed in the README.
+Chat turns are independent. Memory would let an injected instruction survive
+from one turn into the next, and would make evaluation non-reproducible.
 
-All failures are turned into one-line messages for the user; the traceback
-goes to the log file only.
+Failures reach the user as one sentence; the traceback goes to the log file.
 """
 
 from __future__ import annotations
@@ -21,10 +19,13 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 
-from rich.console import Console
+from rich import box
+from rich.console import Console, RenderableType
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from cerulean_rag.config import Settings, get_settings
 from cerulean_rag.logging_setup import setup_logging
@@ -50,11 +51,8 @@ HELP_TEXT = """Commands:
 Each question is answered independently; there is no conversation memory."""
 
 
-# --------------------------------------------------------------------------- #
-# Preflight + error translation
-# --------------------------------------------------------------------------- #
 def ollama_problem(base_url: str) -> str | None:
-    """Return a user-facing message if the Ollama server is not reachable, else None."""
+    """A message if the server is unreachable, None if it is fine."""
     try:
         with urllib.request.urlopen(base_url, timeout=3) as resp:
             if resp.status == 200:
@@ -69,7 +67,7 @@ def ollama_problem(base_url: str) -> str | None:
 
 
 def friendly_error(exc: BaseException, settings: Settings) -> str:
-    """Map an exception to one sentence the user can act on."""
+    """One sentence the user can act on."""
     text = f"{exc.__class__.__name__}: {exc}"
     lower = text.lower()
     if "collection" in lower and "not found" in lower or "chunks.jsonl" in lower or "run `python scripts/ingest.py`" in lower:
@@ -81,9 +79,6 @@ def friendly_error(exc: BaseException, settings: Settings) -> str:
     return f"Something went wrong ({exc.__class__.__name__}). Details are in {settings.LOG_FILE}."
 
 
-# --------------------------------------------------------------------------- #
-# Rendering
-# --------------------------------------------------------------------------- #
 # Each decision gets a plain-English gloss. The bare label ("INSUFFICIENT
 # EVIDENCE") tells a first-time reader nothing about what the assistant did.
 DECISION_GLOSS: dict[str, str] = {
@@ -130,7 +125,7 @@ _WARNING_PLAIN: list[tuple[re.Pattern[str], str]] = [
 
 
 def plain_warning(w: str) -> str:
-    """One audit warning rewritten for a human reader; unknown ones pass through."""
+    """An audit warning rewritten for a reader; unknown ones pass through."""
     for rx, template in _WARNING_PLAIN:
         m = rx.match(w.strip())
         if m:
@@ -139,7 +134,6 @@ def plain_warning(w: str) -> str:
 
 
 def _doc_lookup() -> dict:
-    """document_id -> DocumentMeta, from the loaded retriever when available."""
     try:
         from cerulean_rag.retrieval import get_retriever
 
@@ -153,6 +147,55 @@ def _heading(console: Console, text: str) -> None:
     console.print(f"[bold]{text}[/bold]")
 
 
+# A citation quote lifted from a rendered table arrives as pipe-separated cells
+# ("SAR 5,200 | Up to 50 | 500 GB"), which reads like debris on screen. The
+# separator row is dropped and the cells are joined with a middle dot.
+def clean_quote(quote: str) -> str:
+    q = re.sub(r"\s+", " ", quote).strip().strip('"').strip()
+    if "|" in q:
+        cells = [c.strip() for c in q.split("|")]
+        cells = [c for c in cells if c and set(c) != {"-"}]
+        q = " · ".join(cells)
+    return q
+
+
+# Conflict positions are written by the model as "DOC-ID §section: value".
+# Splitting the source off lets the values line up in their own column.
+_POSITION_SPLIT_RE = re.compile(
+    r"^\s*([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+(?:\s*§?\s*[^:]{0,60}?)?)\s*:\s*(\S.*)$", re.S
+)
+
+
+def split_position(position: str) -> tuple[str, str]:
+    """``("SALES-PL-2026 §1", "SAR 5,200 ...")``; source is "" when there is no prefix."""
+    m = _POSITION_SPLIT_RE.match(position.strip())
+    if not m:
+        return "", re.sub(r"\s+", " ", position.strip())
+    return m.group(1).strip(), re.sub(r"\s+", " ", m.group(2).strip())
+
+
+def _rows(console: Console, rows: list[tuple[RenderableType, RenderableType]],
+          indent: int = 4, gap: int = 2) -> None:
+    """Label/value pairs as a borderless two-column table.
+
+    rich applies an f-string's leading spaces to the first line only, so long
+    values used to wrap back to column 0 and lose the shape of the list. A table
+    gives every continuation line the same left edge as its value.
+    """
+    table = Table(box=None, show_header=False, show_edge=False, pad_edge=False,
+                  padding=(0, gap, 0, 0))
+    table.add_column(no_wrap=True)
+    table.add_column(overflow="fold", ratio=1)
+    for label, value in rows:
+        table.add_row(label, value)
+    console.print(Padding(table, (0, 0, 0, indent)))
+
+
+def _bullets(console: Console, items: list[str], style: str = "", indent: int = 4) -> None:
+    _rows(console, [(Text("-", style="dim"), Text(item, style=style)) for item in items],
+          indent=indent, gap=1)
+
+
 def render_result(result: AnswerResult, console: Console, show_context: bool = False) -> None:
     p = result.parsed
     label, style = DECISION_STYLE.get(p.decision, (p.decision.upper(), "bold"))
@@ -160,71 +203,84 @@ def render_result(result: AnswerResult, console: Console, show_context: bool = F
     conf_style = CONFIDENCE_STYLE.get(result.confidence, "white")
     gloss = DECISION_GLOSS.get(p.decision, "")
 
-    # The verdict, what it means and how sure the system is all sit on the frame
-    # of the answer itself, instead of on loose lines above it.
+    # verdict, meaning and confidence all ride on the frame of the answer itself
     console.print(
         Panel(
             Markdown(p.answer or "(empty answer)"),
-            title=f"[{style}]{label}[/]  [dim]/[/dim]  confidence [{conf_style}]{result.confidence}[/]",
+            title=f"[{style}]{label}[/]  [dim]·[/dim]  confidence [{conf_style}]{result.confidence}[/]",
             title_align="left",
             subtitle=f"[dim]{gloss}[/dim]" if gloss else None,
             subtitle_align="left",
             border_style=colour,
+            box=box.ROUNDED,
             padding=(1, 2),
         )
     )
 
     if p.clarification_options:
         _heading(console, "Which did you mean?")
-        for i, opt in enumerate(p.clarification_options, 1):
-            console.print(f"  [cyan]{i}.[/cyan] {opt}")
+        _rows(console, [(Text(f"{i}.", style="cyan"), Text(opt))
+                        for i, opt in enumerate(p.clarification_options, 1)], indent=2, gap=1)
 
     if p.conflicts:
         _heading(console, "Why the documents disagreed")
-        for cf in p.conflicts:
-            console.print(f"  [bold yellow]{cf.topic}[/bold yellow]")
+        # splitting each position into source and value lines the competing
+        # figures up under one another, where they can be compared at a glance
+        for i, cf in enumerate(p.conflicts):
+            if i:
+                console.print()
+            console.print(Padding(Text(cf.topic, style="bold yellow"), (0, 0, 0, 2)))
+            rows: list[tuple[RenderableType, RenderableType]] = []
             for pos in cf.positions:
-                console.print(f"      [yellow]-[/yellow] {pos}")
+                source, value = split_position(pos)
+                rows.append((Text(source or "says", style="yellow"), Text(value)))
             if cf.resolution:
-                console.print(f"      [bold green]=>[/bold green] {cf.resolution}")
+                rows.append((Text("RESOLVED", style="bold green"), Text(cf.resolution)))
             if cf.reasoning:
-                console.print(f"         [dim]{cf.reasoning}[/dim]")
+                rows.append((Text("because", style="dim"), Text(cf.reasoning, style="dim")))
+            _rows(console, rows)
 
     if p.citations:
         meta = _doc_lookup()
         _heading(console, "Where this comes from")
+        rows = []
         seen: set[tuple[str, str]] = set()
-        n = 0
         for c in p.citations:
             key = (c.document_id, c.section)
             if key in seen:
                 continue
             seen.add(key)
-            n += 1
             m = meta.get(c.document_id)
-            console.print(f"  [cyan]{n}.[/cyan] [bold]{c.document_id}[/bold]" + (f"  {m.title}" if m else ""))
-            detail = f"section {c.section}" if c.section else ""
+            body = Text()
+            body.append(c.document_id, style="bold")
             if m:
-                detail += f"{'  /  ' if detail else ''}version {m.version}, effective {m.effective_date.isoformat()}"
+                body.append(f"  {m.title}")
+            detail = [f"section {c.section}"] if c.section else []
+            if m:
+                detail.append(f"version {m.version}, effective {m.effective_date.isoformat()}")
             if detail:
-                console.print(f"     [dim]{detail}[/dim]")
-            if c.quote.strip():
-                console.print(f'     [italic]"{c.quote.strip()}"[/italic]')
+                body.append("\n" + "  ·  ".join(detail), style="dim")
+            quote = clean_quote(c.quote)
+            if quote:
+                body.append(f'\n"{quote}"', style="italic")
+            rows.append((Text(f"{len(rows) + 1}.", style="cyan"), body))
+        _rows(console, rows, indent=2, gap=1)
 
     if p.assumptions:
         _heading(console, "Assumptions made")
-        for a in p.assumptions:
-            console.print(f"  - {a}")
+        _bullets(console, p.assumptions, indent=2)
 
     if p.injection_noticed:
         _heading(console, "Security")
-        console.print("  [yellow]A retrieved document contained instructions aimed at AI assistants.[/yellow]")
-        console.print("  [dim]They were treated as ordinary text and not obeyed.[/dim]")
+        _rows(console, [(
+            Text("!", style="bold yellow"),
+            Text("A retrieved document contained instructions aimed at AI assistants.\n", style="yellow")
+            + Text("They were treated as ordinary text and not obeyed.", style="dim"),
+        )], indent=2, gap=1)
 
     if result.warnings:
         _heading(console, "What the system changed or flagged")
-        for w in result.warnings:
-            console.print(f"  [dim]- {plain_warning(w)}[/dim]")
+        _bullets(console, [plain_warning(w) for w in result.warnings], style="dim", indent=2)
 
     t = result.timings_ms
     console.print()
@@ -258,16 +314,15 @@ def render_context(result: AnswerResult, console: Console) -> None:
                   "dash = that search missed it[/dim]")
     if result.signals:
         _heading(console, "What the system told the model before it answered")
+        # A signal may be several lines (the date-span helper is); each keeps its
+        # own hanging indent instead of wrapping back to the left margin.
         for s in result.signals:
             first, *rest = s.splitlines()
-            console.print(f"  [dim]- {first}[/dim]")
+            _rows(console, [(Text("-", style="dim"), Text(first, style="dim"))], indent=2, gap=1)
             for line in rest:
-                console.print(f"      [dim]{line.strip()}[/dim]")
+                console.print(Padding(Text(line.strip(), style="dim"), (0, 0, 0, 6)))
 
 
-# --------------------------------------------------------------------------- #
-# Commands
-# --------------------------------------------------------------------------- #
 def run_ask(question: str, settings: Settings, console: Console, as_json: bool, show_context: bool) -> int:
     from cerulean_rag.pipeline import ask
 
@@ -286,7 +341,7 @@ def run_ask(question: str, settings: Settings, console: Console, as_json: bool, 
 
 def run_chat(settings: Settings, console: Console, as_json: bool = False,
              input_fn: Callable[[str], str] | None = None) -> int:
-    """REPL. ``input_fn`` is injectable for tests; defaults to console.input."""
+    """input_fn is injectable for tests; it defaults to console.input."""
     from cerulean_rag.pipeline import ask
 
     read = input_fn or (lambda prompt: console.input(prompt))
@@ -337,9 +392,6 @@ def run_chat(settings: Settings, console: Console, as_json: bool = False,
             render_result(last, console)
 
 
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cerulean-rag", description="Ask questions about the Cerulean Systems documents.")
     parser.add_argument("--model", help="generation model tag (default: GEN_MODEL from .env)")

@@ -1,9 +1,7 @@
-"""Application settings.
+"""Settings, from environment variables or a .env file.
 
-All configuration comes from environment variables or a ``.env`` file in the
-working directory, with the defaults below. ``AS_OF_DATE`` is deliberately a
-setting rather than the system clock so that answers to "what is current"
-questions are reproducible (assignment as-of date: 27 August 2026).
+AS_OF_DATE is configuration rather than the system clock so that "what is
+current" answers stay reproducible.
 """
 
 from __future__ import annotations
@@ -19,8 +17,6 @@ _LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 
 
 class Settings(BaseSettings):
-    """Typed settings; every field can be overridden by an env var of the same name."""
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -62,7 +58,6 @@ class Settings(BaseSettings):
     @field_validator("AS_OF_DATE", mode="before")
     @classmethod
     def _parse_as_of_date(cls, value: object) -> object:
-        """Accept ISO strings such as ``2026-08-27``; reject anything unparseable."""
         if isinstance(value, date):
             return value
         if isinstance(value, str):
@@ -91,5 +86,4 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Return the process-wide settings instance (loaded once)."""
     return Settings()

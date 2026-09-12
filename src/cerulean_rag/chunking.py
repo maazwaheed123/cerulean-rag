@@ -1,21 +1,14 @@
 """Section-aware chunking with context headers.
 
-One chunk = one logical section of a document (a numbered heading and
-everything up to the next heading, tables included) or, for FAQ-style
-documents, one question with its answer. Sections that exceed
-``MAX_CHUNK_CHARS`` are split with overlap and the heading is repeated in
-every part. Documents with neither numbered headings nor questions fall back
-to a plain recursive character splitter.
-
-Every chunk carries a one-line context header::
+One chunk is one logical section, tables included, or one FAQ question with its
+answer; anything with neither falls back to a character splitter. Each chunk is
+embedded behind a header such as
 
     [HR-POL-002 v4.1 | Leave and Time Off Policy | effective 2026-01-01 | current | 4.2 Annual leave entitlement]
 
-which is embedded together with the text and shown to the model at query
-time, so document identity, dates and supersession status travel with the
-passage wherever it goes.
+so identity, dates and supersession status travel with the passage.
 
-Debug: ``python -m cerulean_rag.chunking corpus`` prints every chunk.
+python -m cerulean_rag.chunking corpus prints every chunk.
 """
 
 from __future__ import annotations
@@ -71,20 +64,14 @@ class _Section:
         return self.lines[0].page if self.lines else 1
 
 
-# --------------------------------------------------------------------------- #
-# Heading detection
-# --------------------------------------------------------------------------- #
 def _parse_number(num: str) -> tuple[int, ...]:
     return tuple(int(p) for p in num.split("."))
 
 
 def _is_successor(prev: tuple[int, ...] | None, cur: tuple[int, ...]) -> bool:
-    """Is ``cur`` the next heading number after ``prev`` in a document outline?
-
-    Accepts: the next sibling (4.2 -> 4.3), the first child (4 -> 4.1), or the
-    next sibling of any ancestor (4.9 -> 5). Rejects everything else, which is
-    what filters out numbered list items such as "2. Requests are acknowledged
-    within two working days." appearing inside section 4.
+    """Accepts the next sibling (4.2 -> 4.3), the first child (4 -> 4.1), or the
+    next sibling of an ancestor (4.9 -> 5), and nothing else. That is what keeps
+    a numbered list item inside section 4 from being read as a heading.
     """
     if prev is None:
         return True
@@ -97,7 +84,7 @@ def _is_successor(prev: tuple[int, ...] | None, cur: tuple[int, ...]) -> bool:
 
 
 def match_heading(line: str, prev_number: tuple[int, ...] | None) -> tuple[str, str] | None:
-    """Return ``(number, title)`` if ``line`` is a section heading that follows ``prev_number``."""
+    """(number, title) if the line is a heading that follows prev_number."""
     m = _HEADING_RE.match(line.strip())
     if not m:
         return None
@@ -109,9 +96,6 @@ def match_heading(line: str, prev_number: tuple[int, ...] | None) -> tuple[str, 
     return number, title
 
 
-# --------------------------------------------------------------------------- #
-# Section builders
-# --------------------------------------------------------------------------- #
 def _document_lines(doc: LoadedDocument) -> list[_Line]:
     lines: list[_Line] = []
     for page_no, page in enumerate(doc.pages, start=1):
@@ -128,7 +112,7 @@ def _slug(text: str, limit: int = 48) -> str:
 
 
 def split_numbered_sections(lines: list[_Line]) -> list[_Section]:
-    """Split on numbered headings; text before the first heading becomes a preamble."""
+    """Text before the first heading becomes a preamble."""
     sections: list[_Section] = []
     current = _Section(number="0", label="Preamble", slug="preamble", lines=[])
     prev: tuple[int, ...] | None = None
@@ -138,7 +122,6 @@ def split_numbered_sections(lines: list[_Line]) -> list[_Section]:
             number, title = hit
             if current.lines:
                 sections.append(current)
-            # Label mirrors the heading as written ("2. Approval thresholds", "4.2 Accrual").
             current = _Section(number=number, label=ln.text.strip(), slug=number, lines=[ln])
             prev = _parse_number(number)
         else:
@@ -149,7 +132,7 @@ def split_numbered_sections(lines: list[_Line]) -> list[_Section]:
 
 
 def split_faq_sections(lines: list[_Line]) -> list[_Section]:
-    """Split on question lines; short un-punctuated lines before a question are group headings."""
+    """Split on question lines; a short unpunctuated line before one is a group heading."""
     sections: list[_Section] = []
     group: str | None = None
     current: _Section | None = None
@@ -194,9 +177,6 @@ def _count_headings(lines: list[_Line]) -> int:
     return n
 
 
-# --------------------------------------------------------------------------- #
-# Chunk assembly
-# --------------------------------------------------------------------------- #
 def context_header(meta: DocumentMeta, section_label: str) -> str:
     status = "current" if meta.is_current else f"superseded by {meta.superseded_by}"
     if meta.review_status:
@@ -224,7 +204,7 @@ def _make_chunk(meta: DocumentMeta, section: _Section, text: str, part: int, ind
 
 
 def _split_oversized(section: _Section) -> list[str]:
-    """Split a long section into parts, repeating the heading line in each part."""
+    """The heading line is repeated in every part."""
     heading = section.lines[0].text.strip() if section.number else section.label
     body = "\n".join(ln.text for ln in section.lines[1:]) if section.number else section.text
     splitter = RecursiveCharacterTextSplitter(
@@ -237,7 +217,7 @@ def _split_oversized(section: _Section) -> list[str]:
 
 
 def chunk_document(doc: LoadedDocument, start_index: int = 0) -> list[Chunk]:
-    """Chunk one document. ``start_index`` seeds ``chunk_index`` for corpus-wide numbering."""
+    """start_index seeds chunk_index so numbering is unique corpus-wide."""
     meta = doc.meta
     lines = _document_lines(doc)
     if not lines:
@@ -279,7 +259,6 @@ def chunk_document(doc: LoadedDocument, start_index: int = 0) -> list[Chunk]:
 
 
 def chunk_documents(docs: list[LoadedDocument]) -> list[Chunk]:
-    """Chunk every document; ``chunk_index`` is unique across the corpus."""
     chunks: list[Chunk] = []
     for doc in docs:
         chunks.extend(chunk_document(doc, start_index=len(chunks)))
@@ -287,9 +266,6 @@ def chunk_documents(docs: list[LoadedDocument]) -> list[Chunk]:
     return chunks
 
 
-# --------------------------------------------------------------------------- #
-# Debug entry point
-# --------------------------------------------------------------------------- #
 def looks_like_table(text: str) -> bool:
     return sum(1 for ln in text.splitlines() if _TABLE_ROW_RE.match(ln.strip())) >= 3
 

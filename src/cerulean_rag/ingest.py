@@ -1,16 +1,9 @@
-"""Ingestion: load -> chunk -> scan -> embed -> persist.
+"""load -> chunk -> scan -> embed -> persist.
 
-Produces two artefacts under ``data/``:
-
-* ``chroma/``       the persistent Chroma collection (cosine space) holding one
-                    vector per chunk plus flat metadata;
-* ``chunks.jsonl``  one JSON object per chunk (the full ``Chunk`` model). This is
-                    the source for the BM25 index in retrieval and the audit
-                    trail for what was embedded.
-
-The build is always a full rebuild: the collection is dropped and recreated.
-The corpus is 13 small files, so incremental indexing would add complexity
-for no benefit (noted in the README as a deliberate omission).
+Writes data/chroma (one vector per chunk, cosine space) and data/chunks.jsonl
+(the full Chunk records, which feed the BM25 index and act as the audit trail
+for what was embedded). Always a full rebuild: 13 small files do not justify
+incremental indexing.
 """
 
 from __future__ import annotations
@@ -58,9 +51,6 @@ class IngestStats:
         )
 
 
-# --------------------------------------------------------------------------- #
-# chunks.jsonl
-# --------------------------------------------------------------------------- #
 def write_chunks_jsonl(chunks: list[Chunk], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -70,7 +60,6 @@ def write_chunks_jsonl(chunks: list[Chunk], path: Path) -> None:
 
 
 def load_chunks_jsonl(path: Path) -> list[Chunk]:
-    """Reload chunks written by :func:`write_chunks_jsonl` (used by BM25 and tests)."""
     if not path.is_file():
         raise FileNotFoundError(f"{path} not found; run `python scripts/ingest.py` first")
     chunks: list[Chunk] = []
@@ -81,15 +70,9 @@ def load_chunks_jsonl(path: Path) -> list[Chunk]:
     return chunks
 
 
-# --------------------------------------------------------------------------- #
-# Chroma
-# --------------------------------------------------------------------------- #
 def open_vector_store(settings: Settings, create: bool = False) -> Chroma:
-    """Open the persistent Chroma collection (cosine space).
-
-    With ``create=False`` the collection must already exist; a clear error is
-    raised otherwise so query paths never silently build an empty index.
-    """
+    """With create=False the collection must already exist, so a query path can
+    never silently build an empty index."""
     client = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
     if not create:
         names = [c.name for c in client.list_collections()]
@@ -115,11 +98,8 @@ def _drop_collection(settings: Settings) -> None:
         log.info("dropped existing collection %r", settings.COLLECTION_NAME)
 
 
-# --------------------------------------------------------------------------- #
-# Build
-# --------------------------------------------------------------------------- #
 def build_index(settings: Settings | None = None, embed: bool = True) -> IngestStats:
-    """Run the full ingestion. ``embed=False`` writes chunks.jsonl only (no Ollama needed)."""
+    """embed=False writes chunks.jsonl only, so it runs without Ollama."""
     s = settings or get_settings()
     t0 = time.perf_counter()
 
@@ -174,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(s.LOG_LEVEL, s.LOG_FILE)
     try:
         stats = build_index(s, embed=not args.no_embed)
-    except Exception as exc:  # surface a clean one-line error to the console
+    except Exception as exc:
         log.error("ingest failed: %s", exc)
         return 1
     print(json.dumps(asdict(stats), indent=2) if args.json else stats.summary())

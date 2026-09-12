@@ -5,11 +5,8 @@ Usage:
   python scripts/run_eval.py --only Q4,Q5 --tag debug
   python scripts/run_eval.py --repeat 2          # stability: run every question twice
 
-Writes eval/results/<timestamp>_<model>[_tag].json (full AnswerResults + scores)
-and the matching .md (summary table, per-question answers, aggregate stats).
-
-Scoring is generic (decision, cited docs, regex must/must-not, conflict flag,
-injection flag, clarification count). Nothing here feeds back into the pipeline.
+Writes a JSON file (full results plus scores) and a Markdown report into
+eval/results/. Scoring is generic and nothing here feeds back into the pipeline.
 """
 
 from __future__ import annotations
@@ -35,9 +32,6 @@ from cerulean_rag.pipeline import ask
 CHECK_NAMES = ["decision", "docs", "contains", "not_contains", "conflict", "injection", "clarification"]
 
 
-# --------------------------------------------------------------------------- #
-# Scoring
-# --------------------------------------------------------------------------- #
 def searchable_text(result: AnswerResult) -> str:
     p = result.parsed
     parts = [p.answer]
@@ -112,9 +106,6 @@ def score(spec: dict, result: AnswerResult, flagged_chunk_ids: set[str]) -> dict
     }
 
 
-# --------------------------------------------------------------------------- #
-# Reporting
-# --------------------------------------------------------------------------- #
 def _fmt_s(ms: float | None) -> str:
     return "-" if ms is None else f"{ms / 1000:.1f}"
 
@@ -257,9 +248,6 @@ def write_markdown(path: Path, runs: list[dict], meta: dict) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
 def load_questions(path: Path, only: set[str] | None) -> list[dict]:
     specs = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(specs, list) or not specs:

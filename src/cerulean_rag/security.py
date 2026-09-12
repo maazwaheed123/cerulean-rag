@@ -1,24 +1,14 @@
-"""Deterministic security layer: three independent defences.
+"""Three independent, deterministic defences.
 
-1. **Injection scanner** (ingest time). ``scan_text`` finds text inside a
-   document that addresses an AI assistant or tries to issue commands, and
-   ``extract_payloads`` pulls out the sentences and claims such text wants
-   repeated. Flagged chunks are still indexed (the content is real company
-   material) but are tagged, and their payloads are checked against every
-   answer.
-2. **Input guard** (before retrieval). ``check_user_input`` refuses prompt-
-   extraction attempts and malformed input without spending an LLM call. It is
-   deliberately narrow: policy-bypass requests are *not* blocked here, the
-   model declines those under its own rules and the output checks make sure
-   nothing leaked.
-3. **Output checks** (after generation). ``verify_answer`` drops citations to
-   documents that were not in the context, blocks answers that echo an
-   injection payload as fact, flags figures that do not appear in the
-   context, downgrades uncited answers, scrubs refusals that leak policy
-   details, and blocks any answer that reproduces the system prompt.
+At ingest, the scanner flags document text that addresses an AI assistant and
+extracts the claims such text wants repeated. Before retrieval, the input guard
+refuses prompt-extraction attempts without spending an LLM call; it is
+deliberately narrow, since policy-bypass requests are for the model to decline.
+After generation, verify_answer checks the output against the context and those
+extracted payloads.
 
-Everything here is regex and string comparison. Nothing is keyed to a specific
-question or document; the patterns describe *kinds* of text.
+All of it is regex and string comparison, and none of it is keyed to a
+particular question or document: the patterns describe kinds of text.
 """
 
 from __future__ import annotations
@@ -31,9 +21,7 @@ from cerulean_rag.models import AnswerSchema, Chunk
 
 log = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------------- #
-# 1. Injection scanner
-# --------------------------------------------------------------------------- #
+
 INJECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (name, re.compile(pattern, flags))
     for name, pattern, flags in [
@@ -80,7 +68,7 @@ class InjectionSpan:
 
 
 def scan_text(text: str) -> list[InjectionSpan]:
-    """Return every match of the injection patterns, sorted by position."""
+    """Every pattern match, in document order."""
     spans: list[InjectionSpan] = []
     for name, rx in INJECTION_PATTERNS:
         for m in rx.finditer(text):
@@ -105,9 +93,9 @@ def _sentences_with_offsets(text: str) -> list[tuple[int, int, str]]:
 
 
 def extract_payloads(text: str, spans: list[InjectionSpan]) -> list[str]:
-    """Sentences overlapping an injection span, plus quoted strings and
-    'respond that ...' claims inside them. These are what an obeyed
-    injection would make the assistant say, so they are what we check for."""
+    """Sentences overlapping a span, plus the quotes and "respond that ..." claims
+    inside them: what an obeyed injection would make the assistant say, and so
+    what every answer is checked against."""
     if not spans:
         return []
     payloads: list[str] = []
@@ -141,8 +129,7 @@ def extract_payloads(text: str, spans: list[InjectionSpan]) -> list[str]:
 
 
 def annotate_chunks(chunks: list[Chunk]) -> int:
-    """Set ``has_injection``, ``injection_spans`` and ``injection_payloads`` on each chunk in place.
-    Returns the number of chunks flagged."""
+    """Tag each chunk in place; returns how many were flagged."""
     flagged = 0
     for chunk in chunks:
         spans = scan_text(chunk.text)
@@ -158,9 +145,6 @@ def annotate_chunks(chunks: list[Chunk]) -> int:
     return flagged
 
 
-# --------------------------------------------------------------------------- #
-# 2. Input guard
-# --------------------------------------------------------------------------- #
 MAX_QUESTION_CHARS = 2000
 
 EXTRACTION_REFUSAL = (
@@ -192,7 +176,7 @@ class GuardResult:
 
 
 def check_user_input(question: str) -> GuardResult:
-    """Block empty, oversized and prompt-extraction inputs; pass everything else."""
+    """Blocks empty, oversized and prompt-extraction input; passes everything else."""
     q = (question or "").strip()
     if not q:
         return GuardResult(True, "empty", "Please enter a question about the Cerulean Systems documents.")
@@ -209,9 +193,6 @@ def check_user_input(question: str) -> GuardResult:
     return GuardResult(False)
 
 
-# --------------------------------------------------------------------------- #
-# 3. Output checks
-# --------------------------------------------------------------------------- #
 SAFE_INJECTION_MESSAGE = (
     "The retrieved document contains embedded text addressed to AI assistants, "
     "which was disregarded. Please re-ask your question; if this message persists, "
@@ -270,9 +251,9 @@ SHINGLE_SIZE = 3
 
 
 def payload_shingles(payload: str) -> list[str]:
-    """3-word fragments of a SHORT payload (a claim or quoted sentence), so a paraphrase
-    such as "there are no rate limits" is still caught. Long sentences are matched only
-    as a whole (in :func:`find_payload_echo`) to avoid false positives on ordinary words."""
+    """Three-word fragments of a short payload, so that a paraphrase such as
+    "there are no rate limits" is still caught. Long sentences are matched whole
+    instead, or ordinary wording would trip the check."""
     words = normalise(payload).split()
     if len(words) > SHORT_PAYLOAD_MAX_WORDS:
         return []
@@ -285,8 +266,7 @@ def payload_shingles(payload: str) -> list[str]:
 
 
 def find_payload_echo(text: str, payloads: list[str]) -> tuple[str, int] | None:
-    """Return (payload, position) if ``text`` repeats a payload verbatim (normalised) or
-    contains a 3-word fragment of a short payload; None otherwise."""
+    """(payload, position) if text repeats a payload or a fragment of one, else None."""
     norm = normalise(text)
     if not norm:
         return None
@@ -311,12 +291,10 @@ _INJECTION_COMMENTARY_RE = re.compile(
 
 
 def prune_non_conflicts(conflicts: list) -> tuple[list, list[str]]:
-    """Keep only conflicts whose positions are two or more document values that differ.
-
-    Drops (with a warning) entries where a position is commentary about injected
-    text rather than a document value, and entries where all positions state the
-    same value once the "DOC-ID §section:" prefix is removed.
-    """
+    """Keep only conflicts whose positions are two or more document values that
+    actually differ. Drops entries where a position is commentary about injected
+    text, and entries whose positions all agree once the "DOC-ID §section:"
+    prefix is stripped."""
     kept: list = []
     warnings: list[str] = []
     for cf in conflicts:
@@ -336,7 +314,7 @@ def verify_answer(
     retrieved: list[Chunk],
     system_prompt: str | None = None,
 ) -> VerificationResult:
-    """Apply the deterministic post-generation checks (a) to (f) from the design."""
+    """The post-generation checks. Returns a corrected copy; never raises."""
     fixed = parsed.model_copy(deep=True)
     warnings: list[str] = []
     blocked = False
@@ -345,7 +323,7 @@ def verify_answer(
     context_ids = {c.document_id for c in retrieved}
     norm_answer = normalise(fixed.answer)
 
-    # (a) citations must point at documents that were actually in the context
+    # citations must point at documents that were actually in the context
     kept = []
     for cit in fixed.citations:
         if cit.document_id in context_ids:
@@ -354,7 +332,7 @@ def verify_answer(
             warnings.append(f"dropped citation to {cit.document_id}: not in retrieved context")
     fixed.citations = kept
 
-    # (b) answer must not repeat an injection payload as fact
+    # an answer must not repeat an injection payload as fact
     payloads: list[str] = []
     payload_owner: dict[str, str] = {}
     for chunk in retrieved:
@@ -372,7 +350,7 @@ def verify_answer(
             fixed.answer = SAFE_INJECTION_MESSAGE
             fixed.injection_noticed = True
 
-        # (b2) injected text must not be used as evidence in the structured fields either
+        # nor use it as evidence in the structured fields
         kept_conflicts = []
         for cf in fixed.conflicts:
             cf_text = " ".join([cf.topic, *cf.positions, cf.resolution, cf.reasoning])
@@ -390,15 +368,14 @@ def verify_answer(
                 fixed.injection_noticed = True
             setattr(fixed, field_name, clean)
 
-    # (b3) a conflict needs two document values that disagree: drop entries whose
-    # positions are commentary about injected text, or whose positions all agree
+    # a conflict needs two document values that disagree
     fixed.conflicts, dropped = prune_non_conflicts(fixed.conflicts)
     warnings.extend(dropped)
     if fixed.decision == "conflict_resolved" and not fixed.conflicts:
         fixed.decision = "answer"
         warnings.append("no genuine conflict remained; decision set to answer")
 
-    # (c) numeric grounding: figures in the answer should exist in the context
+    # figures in the answer should exist somewhere in the context
     if not blocked and fixed.decision != "refused":
         ctx_digits = _context_digit_set(retrieved)
         calc_text = " ".join(fixed.assumptions) + " " + " ".join(
@@ -417,17 +394,17 @@ def verify_answer(
                     continue
                 warnings.append(f"figure '{fig}' not found in retrieved context")
 
-    # (d) a positive answer with nothing to cite is not grounded
+    # a positive answer with nothing to cite is not grounded
     if not blocked and fixed.decision == "answer" and not fixed.citations:
         fixed.decision = "insufficient_evidence"
         warnings.append("answer had no valid citations; downgraded to insufficient_evidence")
 
-    # (e) refusals must not leak policy details
+    # refusals must not leak policy details
     if fixed.decision == "refused" and _REFUSAL_LEAK_RE.search(fixed.answer):
         warnings.append("refusal contained policy details; replaced with generic refusal")
         fixed.answer = GENERIC_REFUSAL
 
-    # (f) the system prompt must never appear in an answer
+    # the system prompt must never appear in an answer
     if system_prompt and not blocked:
         words = normalise(system_prompt).split()
         answer_norm = normalise(fixed.answer)

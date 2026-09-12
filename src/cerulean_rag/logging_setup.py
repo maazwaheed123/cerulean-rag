@@ -1,7 +1,5 @@
-"""Logging configuration: rich console output plus a rotating file.
-
-Call :func:`setup_logging` once at process start (the CLI and scripts do this).
-Library modules only ever do ``logging.getLogger(__name__)``.
+"""Rich console output plus a rotating file. Called once at process start;
+library modules only ever do logging.getLogger(__name__).
 """
 
 from __future__ import annotations
@@ -18,13 +16,8 @@ _CONFIGURED = False
 def setup_logging(
     level: str = "INFO", log_file: str | Path | None = None
 ) -> logging.Logger:
-    """Configure the root logger. Later calls are no-ops.
-
-    Args:
-        level: standard logging level name, e.g. ``"INFO"`` or ``"DEBUG"``.
-        log_file: path of the file log; its parent directory is created.
-            ``None`` disables file logging.
-    """
+    """Configure the root logger; later calls are no-ops. log_file=None disables
+    file logging."""
     global _CONFIGURED
     root = logging.getLogger()
     if _CONFIGURED:

@@ -16,9 +16,9 @@ Layout of every corpus PDF as extracted by PyMuPDF (``page.get_text("text")``):
     Supersedes / <value>   or   Review status / <value>
     <body ...>
 
-The manifest is the authority for metadata. The PDF header is parsed as a
-cross-check and any disagreement is logged as a warning. ``superseded_by`` and
-``is_current`` are derived here from the supersedes chain across the corpus.
+The manifest is the authority; the header is only a cross-check, and any
+disagreement is logged. superseded_by and is_current are derived from the
+supersedes chain across the corpus.
 """
 
 from __future__ import annotations
@@ -68,11 +68,7 @@ class CorpusLoadError(RuntimeError):
     """Raised when the corpus directory or manifest cannot be used."""
 
 
-# --------------------------------------------------------------------------- #
-# Manifest
-# --------------------------------------------------------------------------- #
 def load_manifest(corpus_dir: str | Path) -> list[dict]:
-    """Return the ``documents`` list from ``corpus_manifest.json``."""
     path = Path(corpus_dir) / MANIFEST_NAME
     if not path.is_file():
         raise CorpusLoadError(f"Manifest not found: {path}")
@@ -86,18 +82,14 @@ def load_manifest(corpus_dir: str | Path) -> list[dict]:
     return docs
 
 
-# --------------------------------------------------------------------------- #
-# Page text
-# --------------------------------------------------------------------------- #
 def extract_pages(pdf_path: str | Path, render_tables: bool = True) -> list[str]:
-    """Text of every page in reading order, with tables rendered as pipe rows.
+    """Every page in reading order, with tables rendered as pipe rows.
 
-    Plain ``get_text("text")`` emits each table cell on its own line, which
-    loses the row association ("Atlas Professional" / "SAR 5,200" / ...). With
-    ``render_tables`` the page's text blocks are taken in reading order, blocks
-    that fall inside a detected table are replaced by the table rendered as
-    ``| cell | cell |`` rows at the table's position, and everything else is
-    left exactly as PyMuPDF extracted it.
+    Plain text extraction puts each table cell on its own line, which loses the
+    row association ("Atlas Professional" / "SAR 5,200" / ...) and with it any
+    hope of answering a pricing question. Blocks inside a detected table are
+    replaced by the rendered table at its own position; everything else is left
+    as PyMuPDF extracted it.
     """
     path = Path(pdf_path)
     if not path.is_file():
@@ -109,7 +101,6 @@ def extract_pages(pdf_path: str | Path, render_tables: bool = True) -> list[str]
 
 
 def render_table_rows(rows: list[list[str | None]]) -> str:
-    """Render extracted table rows as Markdown-style pipe rows (header row first)."""
     def clean(cell: str | None) -> str:
         return re.sub(r"\s+", " ", (cell or "")).strip()
 
@@ -151,11 +142,8 @@ def _page_text_with_tables(page: pymupdf.Page) -> str:
 
 
 def strip_running_headers(page_text: str) -> str:
-    """Remove the two-line running header and normalise whitespace.
-
-    Only whole lines matching the header patterns are dropped, so body text
-    that merely mentions the company name is untouched.
-    """
+    """Only whole lines matching the header patterns are dropped, so body text
+    that merely mentions the company name survives."""
     out: list[str] = []
     lines = page_text.splitlines()
     i = 0
@@ -174,7 +162,7 @@ def strip_running_headers(page_text: str) -> str:
 
 
 def parse_date(value: str) -> date:
-    """Parse ``1 January 2026`` or ISO ``2026-01-01``; raise ValueError otherwise."""
+    """Accepts "1 January 2026" and ISO "2026-01-01"."""
     v = value.strip()
     try:
         return date.fromisoformat(v)
@@ -188,16 +176,9 @@ def parse_date(value: str) -> date:
     raise ValueError(f"Unrecognised date: {value!r}")
 
 
-# --------------------------------------------------------------------------- #
-# Metadata block on page 1
-# --------------------------------------------------------------------------- #
 def parse_metadata_block(page1_text: str) -> tuple[dict[str, str], str]:
-    """Split page 1 (headers already stripped) into (header_fields, body_text).
-
-    ``header_fields`` holds ``title``, ``subtitle`` (may be absent) and one entry
-    per metadata label found. The banner and the metadata block are removed
-    from the returned body so they never become chunks.
-    """
+    """Split page 1 into (header_fields, body_text). The banner and the metadata
+    block are cut out of the body so they never become chunks."""
     lines = [ln.strip() for ln in page1_text.splitlines()]
     # Drop leading blanks.
     while lines and not lines[0]:
@@ -260,9 +241,6 @@ def _has_unclosed_paren(text: str) -> bool:
     return text.count("(") > text.count(")")
 
 
-# --------------------------------------------------------------------------- #
-# Merge + derive
-# --------------------------------------------------------------------------- #
 def _normalise_supersedes(value: str | None) -> str | None:
     if value is None:
         return None
@@ -271,7 +249,6 @@ def _normalise_supersedes(value: str | None) -> str | None:
 
 
 def _compare_header_with_manifest(doc_id: str, header: dict[str, str], entry: dict) -> None:
-    """Log a warning for every field where the PDF header disagrees with the manifest."""
     checks: list[tuple[str, str | None, str | None]] = [
         ("document_id", header.get("document_id"), entry.get("document_id")),
         ("version", header.get("version"), entry.get("version")),
@@ -302,12 +279,9 @@ def _compare_header_with_manifest(doc_id: str, header: dict[str, str], entry: di
 
 
 def _soft_eq(a: str | None, b: str | None) -> bool:
-    """Case-insensitive comparison tolerant of punctuation-only differences.
-
-    The manifest writes titles without the em dash the PDFs use
-    ("Atlas Platform — Customer FAQ" vs "Atlas Platform Customer FAQ"), so a
-    spaced dash of any kind is treated as a plain space.
-    """
+    """The manifest writes titles without the em dash the PDFs use ("Atlas
+    Platform — Customer FAQ" against "Atlas Platform Customer FAQ"), so a spaced
+    dash of any kind counts as a space."""
     def norm(s: str | None) -> str:
         if s is None:
             return ""
@@ -317,12 +291,8 @@ def _soft_eq(a: str | None, b: str | None) -> bool:
 
 
 def derive_supersedes_chain(metas: list[DocumentMeta]) -> None:
-    """Set ``superseded_by`` / ``is_current`` in place from the ``supersedes`` links.
-
-    Document A is superseded when some document B's ``supersedes`` value names
-    A's id as its first token (e.g. ``"SALES-PL-2025 v1.0"``). Links to versions
-    not in the corpus leave the target untouched.
-    """
+    """A is superseded when some B's supersedes value opens with A's id
+    ("SALES-PL-2025 v1.0"). Links pointing outside the corpus change nothing."""
     by_id = {m.document_id: m for m in metas}
     for m in metas:
         m.superseded_by = None
@@ -347,13 +317,14 @@ def derive_supersedes_chain(metas: list[DocumentMeta]) -> None:
         older.is_current = False
 
 
-# --------------------------------------------------------------------------- #
-# Public entry point
-# --------------------------------------------------------------------------- #
 def load_document(corpus_dir: str | Path, entry: dict) -> LoadedDocument:
-    """Load one manifest entry: extract, clean, parse header, build metadata."""
     corpus_dir = Path(corpus_dir)
     doc_id = entry.get("document_id", "<unknown>")
+    missing = [k for k in ("document_id", "file", "title", "effective_date") if not entry.get(k)]
+    if missing:
+        raise CorpusLoadError(
+            f"manifest entry for {doc_id} is missing required field(s): {', '.join(missing)}"
+        )
     pdf_path = corpus_dir / entry["file"]
 
     raw_pages = extract_pages(pdf_path)
@@ -361,7 +332,14 @@ def load_document(corpus_dir: str | Path, entry: dict) -> LoadedDocument:
         raise CorpusLoadError(f"{doc_id}: no extractable text in {pdf_path.name}")
 
     cleaned = [strip_running_headers(p) for p in raw_pages]
-    header, body1 = parse_metadata_block(cleaned[0])
+    try:
+        header, body1 = parse_metadata_block(cleaned[0])
+    except CorpusLoadError:
+        # Documents from outside this corpus have no "Document ID / Version / ..."
+        # block on page 1. There is nothing to cross-check and nothing to cut out,
+        # so the manifest entry stands alone and page 1 is all body.
+        log.debug("%s: no metadata block on page 1; using manifest metadata only", doc_id)
+        header, body1 = {}, cleaned[0]
     cleaned[0] = body1
     _compare_header_with_manifest(doc_id, header, entry)
 
@@ -386,8 +364,7 @@ def load_document(corpus_dir: str | Path, entry: dict) -> LoadedDocument:
 
 
 def load_corpus(corpus_dir: str | Path) -> list[LoadedDocument]:
-    """Load every document listed in the manifest, derive the supersedes chain,
-    and return the documents sorted by ``document_id``."""
+    """Everything in the manifest, sorted by id, with the supersedes chain derived."""
     corpus_dir = Path(corpus_dir)
     if not corpus_dir.is_dir():
         raise CorpusLoadError(f"Corpus directory not found: {corpus_dir}")

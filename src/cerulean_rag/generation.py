@@ -1,15 +1,7 @@
-"""One structured LLM call per question, with a fallback path and one retry.
-
-Primary path: ``ChatOllama.with_structured_output(AnswerSchema, method="json_schema")``,
-which uses Ollama's structured-output API so the JSON is constrained to the
-schema at decode time.
-
-Fallback path (used when the primary raises or returns unparseable output):
-``ChatOllama(format="json")`` and a strict Pydantic parse, retried once with
-the validation error appended so the model can correct itself.
-
-If both fail the caller gets a well-formed "could not produce an answer"
-result instead of an exception, so the CLI never crashes on model output.
+"""One LLM call per question: Ollama's json_schema mode, falling back to
+format="json" with a strict parse and one corrective retry. If everything
+fails the caller still gets a well-formed result, so the CLI never crashes on
+model output.
 """
 
 from __future__ import annotations
@@ -47,7 +39,7 @@ class GenerationResult:
 
 
 def token_stats_from(msg) -> dict:
-    """Ollama timing/token counters from a message's response metadata (durations in ns)."""
+    """Ollama's token and timing counters; durations are nanoseconds."""
     md = getattr(msg, "response_metadata", None) or {}
     out: dict = {}
     for k in ("eval_count", "eval_duration", "prompt_eval_count", "prompt_eval_duration",
@@ -86,7 +78,7 @@ def get_llm(settings: Settings | None = None, json_mode: bool = False) -> ChatOl
 
 
 def _extract_json_object(text: str) -> str:
-    """Return the first top-level {...} in ``text`` (models sometimes add prose or fences)."""
+    """First top-level {...}; models sometimes wrap it in prose or fences."""
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.M)
     start = text.find("{")
     if start < 0:
@@ -123,7 +115,7 @@ _LAST_STATS: dict = {}   # token counters of the most recent model call (read by
 
 
 def _structured_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSchema | None, str, str | None]:
-    """Primary path. Returns (parsed or None, raw text, error)."""
+    """Returns (parsed or None, raw text, error)."""
     llm = get_llm(s).with_structured_output(AnswerSchema, method="json_schema", include_raw=True)
     out = llm.invoke(messages)
     raw_msg = out.get("raw")
@@ -144,7 +136,6 @@ def _structured_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSc
 
 
 def _json_mode_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSchema | None, str, str | None]:
-    """Fallback path: format=json and a strict parse."""
     llm = get_llm(s, json_mode=True)
     msg = llm.invoke(messages)
     _LAST_STATS.clear()
@@ -157,7 +148,6 @@ def _json_mode_call(messages: list[BaseMessage], s: Settings) -> tuple[AnswerSch
 
 
 def generate(messages: list[BaseMessage], settings: Settings | None = None) -> GenerationResult:
-    """Run the model once (plus at most one corrective retry) and return a parsed answer."""
     result = _generate(messages, settings)
     result.token_stats = dict(_LAST_STATS)
     return result
@@ -171,7 +161,6 @@ def _generate(messages: list[BaseMessage], settings: Settings | None = None) -> 
     raw = ""
     error: str | None = None
 
-    # 1. structured output
     attempts += 1
     try:
         parsed, raw, error = _structured_call(messages, s)
@@ -184,7 +173,6 @@ def _generate(messages: list[BaseMessage], settings: Settings | None = None) -> 
         log.warning("structured output path failed (%s); falling back to json mode", error)
     warnings.append(f"structured output failed: {str(error)[:160]}")
 
-    # 2. json mode
     attempts += 1
     try:
         parsed, raw, error = _json_mode_call(messages, s)
@@ -198,7 +186,7 @@ def _generate(messages: list[BaseMessage], settings: Settings | None = None) -> 
         return GenerationResult(_failure(), raw, "failed", attempts, time.perf_counter() - t0, error,
                                 warnings + [f"generation failed: {error[:160]}"])
 
-    # 3. one corrective retry with the validation error appended
+    # retry once with the validation error appended, so the model can correct itself
     attempts += 1
     retry_messages = list(messages) + [
         HumanMessage(content=(

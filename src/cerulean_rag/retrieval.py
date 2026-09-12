@@ -1,24 +1,13 @@
-"""Hybrid retrieval: dense vectors + BM25, fused with Reciprocal Rank Fusion.
+"""Hybrid retrieval: dense vectors and BM25, fused with Reciprocal Rank Fusion.
 
-Pipeline for one question (no LLM involved anywhere here):
+No LLM is involved anywhere here. Alongside the passages, retrieval produces the
+trusted material the prompt puts above the excerpts: a similarity band, an
+ambiguity warning, conflict checks derived from the supersedes chain, and
+calendar arithmetic for date-range questions.
 
-1. ``split_subqueries``   compound questions ("summarise X and Y") become two
-                          extra queries; the full question is always searched too.
-2. per query              vector top-k (cosine similarity) and BM25 top-k.
-3. ``rrf_fuse``           all result lists are fused with RRF (k=60), de-duplicated
-                          by chunk id, trimmed to TOP_K. Each chunk keeps its best
-                          vector similarity and BM25 score as evidence.
-4. ``build_signals``      trusted text for the prompt: similarity band, and an
-                          ambiguity warning for short questions whose hits spread
-                          across several documents with near-equal scores.
-5. ``build_metadata_notes`` trusted text from the manifest: status of each
-                          retrieved document relative to AS_OF_DATE, supersedes
-                          links, review status, chronology, and any precedence
-                          clause found in the retrieved text.
-
-Why BM25 as well as vectors: this corpus is full of exact tokens that dense
-embeddings blur ("SAR 25,000", "Enterprise", "probation", document ids,
-"14 calendar days"). Fusion lets either side rescue the other.
+BM25 earns its place because the corpus is full of exact tokens that dense
+embeddings blur ("SAR 25,000", "Enterprise", document ids, "14 calendar days");
+fusion lets either side rescue the other.
 """
 
 from __future__ import annotations
@@ -68,25 +57,18 @@ _PRECEDENCE_RE = re.compile(
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 
-# --------------------------------------------------------------------------- #
-# Tokenisation + sub-queries
-# --------------------------------------------------------------------------- #
 def tokenize(text: str) -> list[str]:
-    """Lowercase alphanumeric tokens, stop words removed, numbers kept (BM25 and heuristics)."""
+    """Lowercase alphanumerics without stop words; numbers are kept."""
     return [t for t in _TOKEN_RE.findall(text.lower()) if t not in STOP_WORDS]
 
 
 def content_tokens(question: str) -> list[str]:
-    """Tokens that carry topic meaning (used by the ambiguity heuristic)."""
     return tokenize(question)
 
 
 def split_subqueries(question: str) -> list[str]:
-    """Return extra queries for a compound question, else an empty list.
-
-    Splits only when the question opens with a summarise/compare/list-style
-    lead and both halves have at least three alphabetic tokens.
-    """
+    """Extra queries for a compound question, else nothing. Splits only behind a
+    summarise/compare/list lead, and only when both halves carry real content."""
     lead = _COMPOUND_LEAD_RE.match(question)
     if not lead:
         return []
@@ -104,20 +86,13 @@ def split_subqueries(question: str) -> list[str]:
     return cleaned
 
 
-# --------------------------------------------------------------------------- #
-# Fusion
-# --------------------------------------------------------------------------- #
 def rrf_fuse(
     ranked_lists: list[tuple[str, list[tuple[str, float]]]],
     top_k: int,
     k: int = RRF_K,
 ) -> list[tuple[str, float, dict[str, float], set[str]]]:
-    """Reciprocal Rank Fusion.
-
-    ``ranked_lists`` is ``[(source_name, [(chunk_id, score), ...]), ...]`` with each
-    inner list already ranked best-first. Returns ``(chunk_id, rrf_score,
-    best_scores_by_source, sources)`` for the top_k fused ids.
-    """
+    """ranked_lists is [(source, [(chunk_id, score), ...]), ...], each already
+    best-first. Returns (chunk_id, rrf_score, best score per source, sources)."""
     rrf: dict[str, float] = {}
     best: dict[str, dict[str, float]] = {}
     sources: dict[str, set[str]] = {}
@@ -132,9 +107,6 @@ def rrf_fuse(
     return [(cid, s, best[cid], sources[cid]) for cid, s in order]
 
 
-# --------------------------------------------------------------------------- #
-# Signals + metadata notes (trusted prompt material)
-# --------------------------------------------------------------------------- #
 def similarity_band(best_sim: float | None, threshold: float) -> str:
     if best_sim is None:
         return "LOW — no vector matches; answer only if the excerpts state the fact explicitly"
@@ -146,7 +118,7 @@ def similarity_band(best_sim: float | None, threshold: float) -> str:
 
 
 def is_ambiguous(question: str, chunks: list[RetrievedChunk]) -> bool:
-    """Short question + hits spread over several documents with near-equal scores."""
+    """A short question whose hits spread over several documents at flat scores."""
     if len(content_tokens(question)) > AMBIGUITY_MAX_CONTENT_TOKENS:
         return False
     docs = {rc.document_id for rc in chunks}
@@ -185,13 +157,11 @@ def build_signals(question: str, chunks: list[RetrievedChunk], best_sim: float |
 
 
 def conflict_check_signals(chunks: list[RetrievedChunk]) -> list[str]:
-    """Imperative reminders derived from metadata relations among the retrieved documents.
-
-    Emitted when the excerpts include (a) a superseded document together with its
-    successor, (b) a document overdue for review alongside current documents, or
-    (c) a precedence clause. These are the situations in which two excerpts may
-    state different values for the same item; the model is told to compare them
-    and to report a conflict rather than answer from one side.
+    """Reminders derived from the metadata relations among the retrieved documents:
+    a superseded document beside its successor, an overdue one beside current
+    ones, or a precedence clause. Those are the cases where two excerpts may give
+    different values for the same item, so the model is told to compare them
+    rather than answer from one side.
     """
     metas: dict[str, DocumentMeta] = {}
     for rc in chunks:
@@ -258,7 +228,7 @@ def _month_index(name: str) -> int | None:
 
 
 def extract_dates(question: str, default_year: int) -> list:
-    """Dates mentioned in the question, in order of appearance (year defaults to ``default_year``)."""
+    """Dates in the question, in order of appearance."""
     import calendar
     from datetime import date as _date
 
@@ -287,13 +257,12 @@ def extract_dates(question: str, default_year: int) -> list:
 
 
 def date_span_signal(question: str, as_of) -> str | None:
-    """Trusted calendar arithmetic for a question that names a start and an end date.
+    """Calendar arithmetic for a question naming a start and an end date.
 
-    Lists every calendar month in the span with the number of days served in it and
-    tallies how many of those months are whole and how many are partial, so the model
-    applies whatever rule the excerpts state to figures that are already correct
-    instead of counting months itself. Contains no policy logic: it never decides
-    what a month is worth, only what the calendar says.
+    Lists every month in the span with the days served in it, and counts the whole
+    and partial months, so the model applies the excerpts' rule to figures that are
+    already right instead of counting months itself. No policy logic lives here: it
+    says what the calendar says, never what a month is worth.
     """
     import calendar
     from datetime import date as _date
@@ -363,7 +332,7 @@ def date_span_signal(question: str, as_of) -> str | None:
 
 
 def security_signal(chunks: list[RetrievedChunk]) -> str | None:
-    """Name the excerpts the scanner flagged so the model treats them as content only."""
+    """Name the flagged excerpts, so the model treats them as content only."""
     flagged: list[str] = []
     for rc in chunks:
         if rc.chunk.has_injection:
@@ -395,7 +364,7 @@ def _precedence_sentences(text: str) -> list[str]:
 
 
 def build_metadata_notes(chunks: list[RetrievedChunk], as_of, all_meta: dict[str, DocumentMeta]) -> list[str]:
-    """Trusted notes about the retrieved documents, derived from the manifest chain."""
+    """Notes about the retrieved documents, derived from the manifest chain."""
     notes: list[str] = [f"Today is {as_of.isoformat()}."]
     metas: dict[str, DocumentMeta] = {}
     for rc in chunks:
@@ -425,7 +394,7 @@ def build_metadata_notes(chunks: list[RetrievedChunk], as_of, all_meta: dict[str
                      "it conflicts with a current document.")
         notes.append(line)
 
-    # explicit link lines when both ends of a supersedes relation are retrieved
+    # spell the relation out when both ends of it were retrieved
     for m in ordered:
         if m.superseded_by and m.superseded_by in metas:
             newer = metas[m.superseded_by]
@@ -438,7 +407,6 @@ def build_metadata_notes(chunks: list[RetrievedChunk], as_of, all_meta: dict[str
         if m.supersedes and not any(m.supersedes.startswith(x) for x in all_meta):
             notes.append(f"{m.document_id} supersedes {m.supersedes}, which is not in the knowledge base.")
 
-    # precedence clauses present in the retrieved text
     seen: set[str] = set()
     for rc in chunks:
         for sentence in _precedence_sentences(rc.chunk.text):
@@ -452,11 +420,8 @@ def build_metadata_notes(chunks: list[RetrievedChunk], as_of, all_meta: dict[str
     return notes
 
 
-# --------------------------------------------------------------------------- #
-# Retriever
-# --------------------------------------------------------------------------- #
 class Retriever:
-    """Holds the chunk table, the BM25 index and the vector store for one process."""
+    """The chunk table, the BM25 index and the vector store for one process."""
 
     def __init__(self, settings: Settings | None = None, chunks: list[Chunk] | None = None,
                  store=None) -> None:
@@ -475,7 +440,6 @@ class Retriever:
         log.info("retriever ready: %d chunks, %d documents, bm25=%s",
                  len(self.chunks), len(self.all_meta), self.settings.USE_BM25)
 
-    # -- individual searches -------------------------------------------------
     @property
     def store(self):
         if self._store is None:
@@ -483,7 +447,7 @@ class Retriever:
         return self._store
 
     def vector_search(self, query: str, k: int) -> list[tuple[str, float]]:
-        """(chunk_id, cosine similarity) best-first."""
+        """(chunk_id, cosine similarity), best first."""
         hits = self.store.similarity_search_with_score(query, k=k)
         out: list[tuple[str, float]] = []
         for doc, distance in hits:
@@ -493,7 +457,7 @@ class Retriever:
         return out
 
     def bm25_search(self, query: str, k: int) -> list[tuple[str, float]]:
-        """(chunk_id, bm25 score) best-first; zero-score chunks are dropped."""
+        """(chunk_id, score), best first; zero-score chunks are dropped."""
         tokens = tokenize(query)
         if not tokens:
             return []
@@ -501,7 +465,6 @@ class Retriever:
         ranked = sorted(range(len(scores)), key=lambda i: -scores[i])[:k]
         return [(self.chunks[i].chunk_id, float(scores[i])) for i in ranked if scores[i] > 0]
 
-    # -- full retrieval ------------------------------------------------------
     def retrieve(self, question: str, top_k: int | None = None) -> RetrievalBundle:
         s = self.settings
         top_k = top_k or s.TOP_K
@@ -560,5 +523,4 @@ class Retriever:
 
 @lru_cache(maxsize=1)
 def get_retriever() -> Retriever:
-    """Process-wide retriever built from the default settings (loads once)."""
     return Retriever(get_settings())

@@ -1,11 +1,9 @@
-"""Prompt text and prompt assembly.
+"""Prompt text and assembly.
 
-The system prompt is a fixed string (only ``as_of_date`` is filled in at
-start-up), so it is an unchanging prefix across questions and Ollama can reuse
-its KV cache for it. Everything that varies per question goes in the human
-message: trusted retrieval signals and metadata notes first, then the
-untrusted document excerpts wrapped in ``<document>`` tags with angle brackets
-escaped, then the question.
+The system prompt is fixed apart from as_of_date, so it is an unchanging
+prefix that Ollama can keep in its KV cache across questions. Everything
+per-question goes in the human message: trusted signals and metadata notes
+first, then the untrusted excerpts, then the question.
 """
 
 from __future__ import annotations
@@ -81,7 +79,6 @@ def _attr(value: object) -> str:
 
 
 def format_document(rc: RetrievedChunk) -> str:
-    """One excerpt as a <document> block with escaped body text."""
     m = rc.chunk.meta
     status = "current" if m.is_current else f"superseded by {m.superseded_by}"
     if m.review_status:
@@ -112,7 +109,6 @@ def render_user_message(bundle: RetrievalBundle) -> str:
 
 
 def build_messages(bundle: RetrievalBundle, as_of: date) -> list[BaseMessage]:
-    """The two messages sent to the model: fixed system prompt + per-question human message."""
     return [
         SystemMessage(content=render_system_prompt(as_of)),
         HumanMessage(content=render_user_message(bundle)),
