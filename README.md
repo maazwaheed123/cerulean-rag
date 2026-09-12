@@ -330,9 +330,10 @@ and any answer reproducing a 12-word span of the system prompt is blocked.
   authentication and no notion of who is asking.
 - **Planted injections are part of the corpus and must stay.** They are indexed
   as real company content, tagged, and handled at query time — not deleted.
-- **The assignment brief and the corpus README are not company knowledge.**
-  Both sit in `docs/` and are deliberately excluded from the manifest, so they
-  are never indexed and never cited as though they were Cerulean policy.
+- **The corpus overview is not company knowledge.** It sits in `docs/`, outside
+  the manifest, so it is never indexed and never cited as though it were
+  Cerulean policy. The manifest is the only thing that decides what is
+  searchable.
 - **The evaluation questions are never special-cased.** Nothing in `src/`
   pattern-matches a question; every behaviour comes from a general mechanism.
   `eval/questions.yaml` is read only by the eval harness.
