@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -83,6 +84,60 @@ def friendly_error(exc: BaseException, settings: Settings) -> str:
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
+# Each decision gets a plain-English gloss. The bare label ("INSUFFICIENT
+# EVIDENCE") tells a first-time reader nothing about what the assistant did.
+DECISION_GLOSS: dict[str, str] = {
+    "answer": "answered from the retrieved documents",
+    "conflict_resolved": "the documents disagreed; the conflict is set out below",
+    "needs_clarification": "the question could mean several things; choose one below",
+    "insufficient_evidence": "the documents do not contain this",
+    "refused": "this request was declined",
+}
+
+# Verification warnings are written for the audit log, in the vocabulary of the
+# code that raised them. Translate them for the terminal; anything unrecognised
+# falls through unchanged rather than being hidden.
+_WARNING_PLAIN: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"^dropped conflict entry '(?P<t>.*?)': a position was commentary about injected text$"),
+     "Dropped a reported conflict about “{t}” - one side of it was commentary on planted text."),
+    (re.compile(r"^dropped conflict entry '(?P<t>.*?)': all positions state the same value$"),
+     "Dropped a reported conflict about “{t}” - the sources actually agree."),
+    (re.compile(r"^dropped conflict entry '(?P<t>.*?)' that used injected text as evidence$"),
+     "Dropped a reported conflict about “{t}” - it used planted text as evidence."),
+    (re.compile(r"^dropped citation to (?P<d>\S+): not in retrieved context$"),
+     "Dropped a citation to {d} - that document was not among the passages retrieved."),
+    (re.compile(r"^dropped (?P<n>\d+) (?P<f>.+?) item\(s\) that used injected text$"),
+     "Dropped {n} {f} item(s) that relied on text planted in a document."),
+    (re.compile(r"^no genuine conflict remained; decision set to answer$"),
+     "No real disagreement remained after checking, so this is reported as a plain answer."),
+    (re.compile(r"^figure '(?P<f>.*?)' not found in retrieved context$"),
+     "The figure {f} does not appear in any retrieved passage - treat it with caution."),
+    (re.compile(r"^answer had no valid citations; downgraded to insufficient_evidence$"),
+     "The answer cited nothing that could be checked, so it was downgraded to “not in knowledge base”."),
+    (re.compile(r"^refusal contained policy details; replaced with generic refusal$"),
+     "The refusal was leaking policy detail, so it was replaced with a plain one."),
+    (re.compile(r"^answer repeats injected text from (?P<c>\S+)$"),
+     "Blocked: the answer repeated instructions planted in {c}. A safe message was sent instead."),
+    (re.compile(r"^answer reproduced part of the system prompt$"),
+     "Blocked: the answer repeated part of the assistant's own instructions. A refusal was sent instead."),
+    (re.compile(r"^model did not flag embedded instructions; disclosure added by the system$"),
+     "The model did not mention the planted instructions it was shown, so the system added that note."),
+    (re.compile(r"^structured output failed: .*$"),
+     "The model's first reply did not match the required format, so it was asked again."),
+    (re.compile(r"^input guard: (?P<k>.+)$"),
+     "Refused before searching the documents (input guard: {k})."),
+]
+
+
+def plain_warning(w: str) -> str:
+    """One audit warning rewritten for a human reader; unknown ones pass through."""
+    for rx, template in _WARNING_PLAIN:
+        m = rx.match(w.strip())
+        if m:
+            return template.format(**m.groupdict())
+    return w
+
+
 def _doc_lookup() -> dict:
     """document_id -> DocumentMeta, from the loaded retriever when available."""
     try:
@@ -93,56 +148,90 @@ def _doc_lookup() -> dict:
         return {}
 
 
+def _heading(console: Console, text: str) -> None:
+    console.print()
+    console.print(f"[bold]{text}[/bold]")
+
+
 def render_result(result: AnswerResult, console: Console, show_context: bool = False) -> None:
     p = result.parsed
     label, style = DECISION_STYLE.get(p.decision, (p.decision.upper(), "bold"))
+    colour = style.split()[-1]
     conf_style = CONFIDENCE_STYLE.get(result.confidence, "white")
-    console.print(f"[{style}]{label}[/]   confidence: [{conf_style}]{result.confidence}[/]")
-    console.print(Panel(Markdown(p.answer or "(empty answer)"), border_style=style.split()[-1]))
+    gloss = DECISION_GLOSS.get(p.decision, "")
+
+    # The verdict, what it means and how sure the system is all sit on the frame
+    # of the answer itself, instead of on loose lines above it.
+    console.print(
+        Panel(
+            Markdown(p.answer or "(empty answer)"),
+            title=f"[{style}]{label}[/]  [dim]/[/dim]  confidence [{conf_style}]{result.confidence}[/]",
+            title_align="left",
+            subtitle=f"[dim]{gloss}[/dim]" if gloss else None,
+            subtitle_align="left",
+            border_style=colour,
+            padding=(1, 2),
+        )
+    )
+
+    if p.clarification_options:
+        _heading(console, "Which did you mean?")
+        for i, opt in enumerate(p.clarification_options, 1):
+            console.print(f"  [cyan]{i}.[/cyan] {opt}")
+
+    if p.conflicts:
+        _heading(console, "Why the documents disagreed")
+        for cf in p.conflicts:
+            console.print(f"  [bold yellow]{cf.topic}[/bold yellow]")
+            for pos in cf.positions:
+                console.print(f"      [yellow]-[/yellow] {pos}")
+            if cf.resolution:
+                console.print(f"      [bold green]=>[/bold green] {cf.resolution}")
+            if cf.reasoning:
+                console.print(f"         [dim]{cf.reasoning}[/dim]")
 
     if p.citations:
         meta = _doc_lookup()
-        console.print("[bold]Sources:[/bold]")
+        _heading(console, "Where this comes from")
         seen: set[tuple[str, str]] = set()
+        n = 0
         for c in p.citations:
             key = (c.document_id, c.section)
             if key in seen:
                 continue
             seen.add(key)
+            n += 1
             m = meta.get(c.document_id)
-            head = (f"{c.document_id} v{m.version} — {m.title} (effective {m.effective_date.isoformat()})"
-                    if m else c.document_id)
-            section = f" §{c.section}" if c.section else ""
-            quote = f'  "{c.quote.strip()}"' if c.quote.strip() else ""
-            console.print(f"  • {head}{section}{quote}")
-
-    if p.conflicts:
-        console.print("[bold yellow]Conflicts found:[/bold yellow]")
-        for cf in p.conflicts:
-            console.print(f"  • [bold]{cf.topic}[/bold]")
-            for pos in cf.positions:
-                console.print(f"      - {pos}")
-            if cf.resolution:
-                console.print(f"      resolution: {cf.resolution}")
-            if cf.reasoning:
-                console.print(f"      reasoning: {cf.reasoning}")
-
-    if p.clarification_options:
-        console.print("[bold cyan]Possible interpretations:[/bold cyan]")
-        for i, opt in enumerate(p.clarification_options, 1):
-            console.print(f"  {i}. {opt}")
+            console.print(f"  [cyan]{n}.[/cyan] [bold]{c.document_id}[/bold]" + (f"  {m.title}" if m else ""))
+            detail = f"section {c.section}" if c.section else ""
+            if m:
+                detail += f"{'  /  ' if detail else ''}version {m.version}, effective {m.effective_date.isoformat()}"
+            if detail:
+                console.print(f"     [dim]{detail}[/dim]")
+            if c.quote.strip():
+                console.print(f'     [italic]"{c.quote.strip()}"[/italic]')
 
     if p.assumptions:
-        console.print("[bold]Assumptions:[/bold] " + "; ".join(p.assumptions))
+        _heading(console, "Assumptions made")
+        for a in p.assumptions:
+            console.print(f"  - {a}")
+
     if p.injection_noticed:
-        console.print("[yellow]Note: a retrieved document contained embedded instructions addressed to AI assistants; they were treated as text.[/yellow]")
+        _heading(console, "Security")
+        console.print("  [yellow]A retrieved document contained instructions aimed at AI assistants.[/yellow]")
+        console.print("  [dim]They were treated as ordinary text and not obeyed.[/dim]")
+
     if result.warnings:
-        console.print("[dim]Warnings: " + " | ".join(result.warnings) + "[/dim]")
+        _heading(console, "What the system changed or flagged")
+        for w in result.warnings:
+            console.print(f"  [dim]- {plain_warning(w)}[/dim]")
 
     t = result.timings_ms
+    console.print()
     console.print(
-        f"[dim]retrieval {t.get('retrieval_ms', 0) / 1000:.1f} s · generation {t.get('generation_ms', 0) / 1000:.1f} s"
-        f" · model {result.model}[/dim]"
+        f"[dim]retrieval {t.get('retrieval_ms', 0) / 1000:.1f} s / generation "
+        f"{t.get('generation_ms', 0) / 1000:.1f} s / model {result.model}"
+        f" / {len(result.retrieved)} passage{'' if len(result.retrieved) == 1 else 's'} used[/dim]"
     )
     if show_context:
         render_context(result, console)
@@ -152,20 +241,28 @@ def render_context(result: AnswerResult, console: Console) -> None:
     if not result.retrieved:
         console.print("[dim](no passages were retrieved for this question)[/dim]")
         return
-    table = Table(title="Retrieved passages (fused ranking)")
+    _heading(console, "Passages retrieved (best first)")
+    table = Table(box=None, pad_edge=False, show_edge=False, header_style="dim")
     for col, just in (("#", "right"), ("document", "left"), ("section", "left"),
-                      ("vec sim", "right"), ("bm25", "right"), ("via", "left")):
+                      ("meaning", "right"), ("keyword", "right"), ("found by", "left")):
         table.add_column(col, justify=just)
     for i, rc in enumerate(result.retrieved, 1):
         table.add_row(
             str(i), rc["document_id"], rc["section"],
             "-" if rc.get("vector_sim") is None else f"{rc['vector_sim']:.3f}",
             "-" if rc.get("bm25") is None else f"{rc['bm25']:.1f}",
-            "+".join(rc.get("sources", [])),
+            " + ".join(rc.get("sources", [])),
         )
     console.print(table)
+    console.print("[dim]  meaning = vector similarity (0-1)   keyword = BM25 score   "
+                  "dash = that search missed it[/dim]")
     if result.signals:
-        console.print("[dim]signals: " + " ".join(result.signals) + "[/dim]")
+        _heading(console, "What the system told the model before it answered")
+        for s in result.signals:
+            first, *rest = s.splitlines()
+            console.print(f"  [dim]- {first}[/dim]")
+            for line in rest:
+                console.print(f"      [dim]{line.strip()}[/dim]")
 
 
 # --------------------------------------------------------------------------- #

@@ -42,11 +42,14 @@ def test_render_result_shows_all_blocks() -> None:
     out = buf.getvalue()
     assert "CONFLICT RESOLVED" in out
     assert "SAR 5,200" in out
-    assert "Sources:" in out and "SALES-PL-2026" in out
-    assert "Conflicts found:" in out and "SUP-FAQ-001: 4,500" in out
-    assert "Warnings:" in out
+    assert "the documents disagreed" in out                      # plain-English gloss on the badge
+    assert "Where this comes from" in out and "SALES-PL-2026" in out
+    assert "Why the documents disagreed" in out and "SUP-FAQ-001: 4,500" in out
+    # the audit warning is shown in plain English, not in its internal wording
+    assert "does not appear in any retrieved passage" in out
+    assert "not found in retrieved context" not in out
     assert "retrieval 2.6 s" in out and "generation 235.6 s" in out
-    assert "Retrieved passages" in out and "0.810" in out
+    assert "Passages retrieved" in out and "0.810" in out
 
 
 def test_parser_subcommands() -> None:
@@ -86,7 +89,7 @@ def test_chat_commands_without_llm(monkeypatch) -> None:
     assert "no question answered yet" in out
     assert "model set to qwen2.5:3b-instruct" in out and "current model: qwen2.5:3b-instruct" in out
     assert "CONFLICT RESOLVED" in out
-    assert "Retrieved passages" in out
+    assert "Passages retrieved" in out
     assert "json output on" in out
     assert "unknown command /bogus" in out
     assert out.rstrip().endswith("bye")
@@ -99,3 +102,27 @@ def test_chat_eof_exits_cleanly() -> None:
     console, buf = _console()
     assert run_chat(Settings(_env_file=None), console, input_fn=raise_eof) == 0
     assert "bye" in buf.getvalue()
+
+
+def test_plain_warning_translates_known_audit_messages() -> None:
+    """Verification warnings are written for the log; the terminal shows English."""
+    from cerulean_rag.cli import plain_warning
+
+    cases = {
+        "dropped conflict entry 'price': all positions state the same value":
+            "the sources actually agree",
+        "dropped citation to HR-POL-002: not in retrieved context":
+            "Dropped a citation to HR-POL-002",
+        "model did not flag embedded instructions; disclosure added by the system":
+            "the system added that note",
+        "input guard: prompt_extraction":
+            "Refused before searching the documents",
+        "answer repeats injected text from PROC-PRO-002#3":
+            "instructions planted in PROC-PRO-002#3",
+    }
+    for raw, expected in cases.items():
+        assert expected in plain_warning(raw), raw
+
+    # anything the table does not cover must survive verbatim rather than vanish
+    assert plain_warning("some future warning") == "some future warning"
+
