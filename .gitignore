@@ -18,3 +18,7 @@ logs/
 .idea/
 Thumbs.db
 desktop.ini
+
+# The assessment brief is SAITC's material, not part of the deliverable.
+# Kept locally, never committed.
+docs/SAITC_Applied_AI_Engineer_Assignment.pdf
