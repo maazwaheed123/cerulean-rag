@@ -1,0 +1,224 @@
+{
+  "meta": {
+    "model": "qwen2.5:7b-instruct",
+    "embed_model": "nomic-embed-text",
+    "as_of_date": "2026-08-27",
+    "top_k": 8,
+    "sim_threshold": 0.65,
+    "use_bm25": true,
+    "num_ctx": 8192,
+    "temperature": 0.0,
+    "seed": 42,
+    "n_questions": 1,
+    "repeat": 1,
+    "prompt_hash": "bdeb3d86f1ea",
+    "started": "2026-09-12T11:30:14",
+    "finished": "2026-09-12T11:34:56",
+    "hardware": "Intel Core i5-1135G7 (4C/8T), 19.8 GB RAM, no GPU, Windows 11"
+  },
+  "runs": [
+    {
+      "id": "Q3",
+      "run": 1,
+      "category": "cross_doc_calc",
+      "question": "An employee joins on 1 March and leaves on 15 September. How much annual leave are they entitled to?",
+      "expected_decision": [
+        "answer"
+      ],
+      "expected_docs": [
+        "HR-POL-002",
+        "HR-PRO-011"
+      ],
+      "notes": "Combine entitlement (24 days) with accrual rules; 15 Sep counts as a full month -> 7 x 2 = 14.",
+      "result": {
+        "question": "An employee joins on 1 March and leaves on 15 September. How much annual leave are they entitled to?",
+        "sub_queries": [],
+        "parsed": {
+          "decision": "answer",
+          "answer": "The employee is entitled to 12 working days of annual leave.",
+          "citations": [
+            {
+              "document_id": "HR-PRO-011",
+              "section": "4. Treatment of partial months",
+              "quote": "A period of service that does not make up a whole calendar month is treated as follows."
+            },
+            {
+              "document_id": "HR-PRO-011",
+              "section": "3. Monthly accrual rate",
+              "quote": "An employee accrues one twelfth of their annual entitlement for each completed month of service."
+            }
+          ],
+          "conflicts": [
+            {
+              "topic": "Accrual rate for partial months",
+              "positions": [
+                "HR-PRO-011 §4. Treatment of partial months: Counts as one completed month.",
+                "HR-PRO-011 §3. Monthly accrual rate: Accrues one twelfth of their annual entitlement per completed month."
+              ],
+              "resolution": "HR-PRO-011 §4. Treatment of partial months: Counts as one completed month.",
+              "reasoning": "HR-PRO-011 explicitly states that partial months are treated as completed, and this takes precedence over the monthly accrual rate."
+            }
+          ],
+          "clarification_options": [],
+          "injection_noticed": false,
+          "assumptions": [
+            "The employee's service period is from 1 March to 15 September, which is 199 calendar days."
+          ]
+        },
+        "confidence": "medium",
+        "warnings": [
+          "figure '12 working days' not found in retrieved context"
+        ],
+        "retrieved": [
+          {
+            "chunk_id": "HR-POL-002::4.2::1",
+            "document_id": "HR-POL-002",
+            "section": "4.2 Annual leave entitlement",
+            "rrf": 0.032,
+            "vector_sim": 0.832,
+            "bm25": 8.08,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-PRO-011::5::1",
+            "document_id": "HR-PRO-011",
+            "section": "5. Leave taken against unaccrued entitlement",
+            "rrf": 0.0313,
+            "vector_sim": 0.797,
+            "bm25": 9.2,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-POL-002::4.5::1",
+            "document_id": "HR-POL-002",
+            "section": "4.5 Carry-over",
+            "rrf": 0.0311,
+            "vector_sim": 0.775,
+            "bm25": 9.87,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-PRO-011::4::1",
+            "document_id": "HR-PRO-011",
+            "section": "4. Treatment of partial months",
+            "rrf": 0.0306,
+            "vector_sim": 0.768,
+            "bm25": 9.54,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-PRO-011::3::1",
+            "document_id": "HR-PRO-011",
+            "section": "3. Monthly accrual rate",
+            "rrf": 0.0301,
+            "vector_sim": 0.799,
+            "bm25": 5.09,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-POL-005::4::1",
+            "document_id": "HR-POL-005",
+            "section": "4. Leave during probation",
+            "rrf": 0.0292,
+            "vector_sim": 0.781,
+            "bm25": 4.82,
+            "sources": [
+              "bm25",
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-POL-002::4.3::1",
+            "document_id": "HR-POL-002",
+            "section": "4.3 Accrual",
+            "rrf": 0.0161,
+            "vector_sim": 0.815,
+            "bm25": null,
+            "sources": [
+              "vector"
+            ]
+          },
+          {
+            "chunk_id": "HR-PRO-011::1::1",
+            "document_id": "HR-PRO-011",
+            "section": "1. Purpose",
+            "rrf": 0.0159,
+            "vector_sim": 0.802,
+            "bm25": null,
+            "sources": [
+              "vector"
+            ]
+          }
+        ],
+        "timings_ms": {
+          "guard_ms": 0.02549999044276774,
+          "retrieval_ms": 3465.283699973952,
+          "prompt_ms": 0.13110000872984529,
+          "generation_ms": 278220.88700000313,
+          "verify_ms": 3.73810000019148,
+          "total_ms": 281690.1037999778
+        },
+        "model": "qwen2.5:7b-instruct",
+        "blocked": false,
+        "generation_method": "json_schema",
+        "signals": [
+          "Best passage similarity: 0.83 (good).",
+          "CONFLICT CHECK: HR-POL-002 §4.3 Accrual; HR-PRO-011 §1. Purpose contain(s) a precedence clause. Where another excerpt describes the same subject differently, you MUST record the conflict (decision \"conflict_resolved\", both values in the answer text, both documents cited) and apply the clause.",
+          "DATE SPAN HELPER (trusted calendar arithmetic, no policy): the question names a period from 1 March to 15 September inclusive, which is 199 calendar days.\n  WHOLE CALENDAR MONTHS IN THE PERIOD: 6 (March, April, May, June, July, August).\n  PARTIAL CALENDAR MONTHS: 1 (September: 15 of 30 days).\n  COMPLETED-MONTH COUNT: 6 whole months, plus any of the 1 partial month that the excerpts' own rules allow to count as completed - so 6 if none of them qualifies, and 7 if all of them do. Read the excerpts to decide which, then use that count.\n  Month by month: March 1-31: 31 days (full month); April 1-30: 30 days (full month); May 1-31: 31 days (full month); June 1-30: 30 days (full month); July 1-31: 31 days (full month); August 1-31: 31 days (full month); September 1-15: 15 days (partial month: 15 of 30 days).\n  Every figure above is correct: do not recount the months, do not re-derive the day counts, and use every month listed rather than only the first and the last. Multiply the completed-month count by whatever per-month figure the excerpts state for this case, cite the excerpt that each input came from, and state a single final figure that every number in your answer agrees with."
+        ],
+        "prompt_chars": 14091,
+        "token_stats": {
+          "eval_count": 330,
+          "eval_duration_ns": 113671813000,
+          "prompt_eval_count": 3486,
+          "prompt_eval_duration_ns": 161838965000,
+          "total_duration_ns": 275657128800,
+          "load_duration_ns": 5333000
+        }
+      },
+      "score": {
+        "pass": false,
+        "checks": {
+          "decision": true,
+          "docs": false,
+          "contains": false,
+          "not_contains": false,
+          "conflict": true,
+          "injection": true,
+          "clarification": true
+        },
+        "failed": [
+          "not cited: ['HR-POL-002']",
+          "missing: ['14 (working )?days']",
+          "forbidden present: ['\\\\b(12|13) working days', '\\\\bentitled to (12|13)\\\\b']"
+        ],
+        "cited_docs": [
+          "HR-PRO-011"
+        ],
+        "retrieved_docs": [
+          "HR-POL-002",
+          "HR-POL-005",
+          "HR-PRO-011"
+        ],
+        "retrieval_recall": 1.0
+      },
+      "gen_tokens_per_s": 2.9030943669386184,
+      "prompt_tokens_per_s": 21.539930139815215
+    }
+  ]
+}

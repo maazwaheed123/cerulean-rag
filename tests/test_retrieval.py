@@ -251,7 +251,7 @@ def test_date_span_helper_lists_months() -> None:
     assert "March 1-31: 31 days (full month)" in sig
     assert "August 1-31: 31 days (full month)" in sig
     assert "September 1-15: 15 days" in sig
-    assert "199 calendar days across 7 calendar months" in sig
+    assert "which is 199 calendar days" in sig
 
 
 def test_date_span_helper_variants_and_absence() -> None:
@@ -263,3 +263,66 @@ def test_date_span_helper_variants_and_absence() -> None:
     assert "June 20-30: 11 days" in sig and "November 1-30: 30 days (full month)" in sig
     wrap = date_span_signal("From 2025-11-20 to 2026-02-10", date(2026, 8, 27))
     assert "November 20-30: 11 days" in wrap and "February 1-10: 10 days" in wrap
+
+
+# ---- round-4 additions: the helper counts the months, the model must not ----
+def test_date_span_helper_leads_with_the_counts() -> None:
+    """Two failures drove this shape. Left to tally the months itself the model counted
+    only the 31-day ones; when the counts trailed a long month list it read the first and
+    last month and skipped the rest. So the counts lead, on their own labelled lines."""
+    from cerulean_rag.retrieval import date_span_signal
+
+    sig = date_span_signal("joins on 1 March and leaves on 15 September", date(2026, 8, 27))
+    lines = [ln.strip() for ln in sig.splitlines()]
+    assert lines[0].startswith("DATE SPAN HELPER")
+    assert lines[1] == "WHOLE CALENDAR MONTHS IN THE PERIOD: 6 (March, April, May, June, July, August)."
+    assert lines[2] == "PARTIAL CALENDAR MONTHS: 1 (September: 15 of 30 days)."
+    assert lines[3].startswith("COMPLETED-MONTH COUNT: 6 whole months")
+    assert lines[4].startswith("Month by month:")
+    # the counts must precede the per-month detail, not follow it
+    assert sig.index("COMPLETED-MONTH COUNT") < sig.index("Month by month")
+
+
+def test_date_span_helper_offers_both_arithmetic_outcomes_not_a_policy_choice() -> None:
+    """The helper must not decide whether a partial month counts - that rule lives in the
+    excerpts. It states both totals and lets the document select."""
+    from cerulean_rag.retrieval import date_span_signal
+
+    sig = date_span_signal("joins on 1 March and leaves on 15 September", date(2026, 8, 27))
+    assert "so 6 if none of them qualifies, and 7 if all of them do" in sig
+    assert "compare its days-served figure above against whatever threshold" in sig
+    # no leave/accrual vocabulary and no answer figure may appear
+    for policy_word in ("leave", "accru", "entitle", "14 days", "24"):
+        assert policy_word not in sig.lower()
+
+
+def test_date_span_helper_count_edge_cases() -> None:
+    from cerulean_rag.retrieval import date_span_signal
+
+    all_whole = date_span_signal("from 1 April to 30 June", date(2026, 8, 27))
+    assert "WHOLE CALENDAR MONTHS IN THE PERIOD: 3 (April, May, June)." in all_whole
+    assert "PARTIAL CALENDAR MONTHS: 0." in all_whole
+    assert "COMPLETED-MONTH COUNT: 3; there is no partial month to judge." in all_whole
+
+    single = date_span_signal("from 10 April to 20 April", date(2026, 8, 27))
+    assert "WHOLE CALENDAR MONTHS IN THE PERIOD: 0." in single
+    assert "PARTIAL CALENDAR MONTHS: 1 (April: 11 of 30 days)." in single
+    assert "so 0 if none of them qualifies, and 1 if all of them do" in single
+
+    two_partial = date_span_signal("from 20 June to 10 August", date(2026, 8, 27))
+    assert "WHOLE CALENDAR MONTHS IN THE PERIOD: 1 (July)." in two_partial
+    assert "PARTIAL CALENDAR MONTHS: 2 (June: 11 of 30 days; August: 10 of 31 days)." in two_partial
+    assert "so 1 if none of them qualifies, and 3 if all of them do" in two_partial
+
+
+def test_system_prompt_defers_to_the_date_span_helper() -> None:
+    """Rule 4 must trust the helper, pick one tier, and emit a single total."""
+    from cerulean_rag.prompts import render_system_prompt
+
+    prompt = render_system_prompt(date(2026, 8, 27))
+    assert "DATE SPAN HELPER" in prompt
+    assert "do not recount the months or re-derive the day counts" in prompt
+    assert "rather than its first and last entries" in prompt
+    assert "which single band applies" in prompt
+    assert "its outcome is not the answer to this question" in prompt
+    assert "exactly one final figure, never two" in prompt

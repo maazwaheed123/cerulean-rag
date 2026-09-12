@@ -289,9 +289,11 @@ def extract_dates(question: str, default_year: int) -> list:
 def date_span_signal(question: str, as_of) -> str | None:
     """Trusted calendar arithmetic for a question that names a start and an end date.
 
-    Lists every calendar month in the span with the number of days served in it,
-    so the model applies whatever rule the excerpts state to correct figures
-    instead of counting months itself. Contains no policy logic.
+    Lists every calendar month in the span with the number of days served in it and
+    tallies how many of those months are whole and how many are partial, so the model
+    applies whatever rule the excerpts state to figures that are already correct
+    instead of counting months itself. Contains no policy logic: it never decides
+    what a month is worth, only what the calendar says.
     """
     import calendar
     from datetime import date as _date
@@ -304,23 +306,60 @@ def date_span_signal(question: str, as_of) -> str | None:
         end = _date(end.year + 1, end.month, end.day)
     if (end - start).days > 366 * 3:
         return None
-    parts = []
+    parts: list[str] = []
+    whole: list[str] = []
+    partial: list[str] = []
     cursor = _date(start.year, start.month, 1)
     while cursor <= end:
         last_day = calendar.monthrange(cursor.year, cursor.month)[1]
         month_start = max(start, cursor)
         month_end = min(end, _date(cursor.year, cursor.month, last_day))
         served = (month_end - month_start).days + 1
-        full = " (full month)" if served == last_day else ""
-        parts.append(f"{cursor.strftime('%B')} {month_start.day}-{month_end.day}: {served} days{full}")
+        name = cursor.strftime("%B")
+        if served == last_day:
+            whole.append(name)
+            tail = " (full month)"
+        else:
+            partial.append(f"{name}: {served} of {last_day} days")
+            tail = f" (partial month: {served} of {last_day} days)"
+        parts.append(f"{name} {month_start.day}-{month_end.day}: {served} days{tail}")
         cursor = _date(cursor.year + (cursor.month == 12), cursor.month % 12 + 1, 1)
     total = (end - start).days + 1
-    return (
-        f"DATE SPAN HELPER (trusted arithmetic): from {start.day} {start.strftime('%B')} to "
-        f"{end.day} {end.strftime('%B')} inclusive is {total} calendar days across {len(parts)} calendar months: "
-        + "; ".join(parts)
-        + ". Apply the rules stated in the excerpts to these figures month by month; do not recount the months."
+
+    # Order matters more than content here. An earlier version put the month list first
+    # and the counts behind it; the model read the first and last month, skipped the
+    # five in between, and never reached the counts. Headline figures lead, on their own
+    # labelled lines, and the month-by-month detail is subordinate to them.
+    lines = [
+        f"DATE SPAN HELPER (trusted calendar arithmetic, no policy): the question names a period from "
+        f"{start.day} {start.strftime('%B')} to {end.day} {end.strftime('%B')} inclusive, "
+        f"which is {total} calendar days.",
+        f"WHOLE CALENDAR MONTHS IN THE PERIOD: {len(whole)}"
+        + (f" ({', '.join(whole)})." if whole else "."),
+        f"PARTIAL CALENDAR MONTHS: {len(partial)}"
+        + (f" ({'; '.join(partial)})." if partial else "."),
+    ]
+    if partial:
+        # Both arithmetic outcomes are stated and the excerpts' own rule selects between
+        # them, so the helper still decides nothing about policy.
+        lines.append(
+            f"COMPLETED-MONTH COUNT: {len(whole)} whole months, plus any of the {len(partial)} partial "
+            f"month{'s' if len(partial) != 1 else ''} that the excerpts' own rules allow to count as "
+            f"completed - so {len(whole)} if none of them qualifies, and {len(whole) + len(partial)} if "
+            f"all of them do. Take each partial month in turn, compare its days-served figure above against "
+            f"whatever threshold the excerpts state, say in the answer whether that month qualifies, and "
+            f"only then fix the count."
+        )
+    else:
+        lines.append(f"COMPLETED-MONTH COUNT: {len(whole)}; there is no partial month to judge.")
+    lines.append("Month by month: " + "; ".join(parts) + ".")
+    lines.append(
+        "Every figure above is correct: do not recount the months, do not re-derive the day counts, and "
+        "use every month listed rather than only the first and the last. Multiply the completed-month "
+        "count by whatever per-month figure the excerpts state for this case, cite the excerpt that each "
+        "input came from, and state a single final figure that every number in your answer agrees with."
     )
+    return '\n  '.join(lines)
 
 
 def security_signal(chunks: list[RetrievedChunk]) -> str | None:
